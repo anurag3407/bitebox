@@ -1,0 +1,25 @@
+{
+  "name": "food-delivery-platform",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "build": "pnpm --filter \"./packages/*\" --filter \"./apps/*\" build",
+    "typecheck": "pnpm --filter \"./packages/*\" --filter \"./apps/*\" typecheck",
+    "lint": "pnpm --filter \"./packages/*\" --filter \"./apps/*\" lint",
+    "test": "vitest run",
+    "test:unit": "vitest run packages/core tests/unit",
+    "test:contracts": "vitest run packages/contracts tests/contracts",
+    "test:integration": "vitest run packages/database tests/integration",
+    "test:watch": "vitest",
+    "dev:web": "pnpm --filter @startup/web dev",
+    "dev:worker": "pnpm --filter @startup/worker dev",
+    "db:migrate": "pnpm --filter @startup/database db:migrate",
+    "db:seed": "pnpm --filter @startup/database db:seed"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

@@ -1,0 +1,198 @@
+openapi: 3.1.0
+info:
+  title: ZomatoFresh Platform API
+  description: High-performance versioned food delivery REST API conforming to plan.md specification.
+  version: 1.0.0
+servers:
+  - url: /api/v1
+    description: Current Monolith Server
+
+paths:
+  /health:
+    get:
+      summary: Health check endpoint
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      status:
+                        type: string
+                        example: "ok"
+                      timestamp:
+                        type: string
+
+  /serviceability/check:
+    post:
+      summary: Check if coordinate is in serviceable zone
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [latitude, longitude]
+              properties:
+                latitude:
+                  type: number
+                  example: 28.6315
+                longitude:
+                  type: number
+                  example: 77.2167
+      responses:
+        '200':
+          description: Serviceability response
+
+  /restaurants:
+    get:
+      summary: List serviceable restaurants
+      parameters:
+        - name: lat
+          in: query
+          schema:
+            type: number
+        - name: lng
+          in: query
+          schema:
+            type: number
+      responses:
+        '200':
+          description: Array of restaurant summaries
+
+  /restaurants/{slug}:
+    get:
+      summary: Get full restaurant details, menu categories, items and modifiers
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Detailed restaurant profile and menu
+
+  /search:
+    get:
+      summary: Search restaurants and dishes
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Matching restaurants and dishes
+
+  /quotes:
+    post:
+      summary: Calculate immutable pricing quote with taxes, fees and discounts
+      responses:
+        '200':
+          description: Pricing quote breakdown in integer paise
+
+  /checkouts:
+    post:
+      summary: Create order and Razorpay payment session
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        '201':
+          description: Order created with Razorpay order details
+
+  /payments/verify:
+    post:
+      summary: Verify Razorpay HMAC signature and mark order paid
+      responses:
+        '200':
+          description: Payment verified and order transitioned to AWAITING_MERCHANT
+
+  /orders/{orderId}:
+    get:
+      summary: Get live order status and tracking details
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Order detail DTO
+
+  /merchant/orders:
+    get:
+      summary: Get active kitchen tickets for restaurant
+      parameters:
+        - name: restaurantId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of active orders
+
+  /merchant/orders/{orderId}/accept:
+    post:
+      summary: Merchant accepts order ticket
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Order accepted
+
+  /merchant/orders/{orderId}/reject:
+    post:
+      summary: Merchant rejects order ticket, triggering auto refund
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Order cancelled and refund initiated
+
+  /rider/trip:
+    get:
+      summary: Get assigned active trip for rider
+      responses:
+        '200':
+          description: Active trip details
+
+  /rider/trip/milestone:
+    post:
+      summary: Advance trip milestone (e.g. ARRIVED_AT_STORE, PICKED_UP, COMPLETED with OTP)
+      responses:
+        '200':
+          description: Trip milestone updated
+
+  /admin/orders/{orderId}/refund:
+    post:
+      summary: Issue financial refund and record double-entry ledger entries
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Refund processed

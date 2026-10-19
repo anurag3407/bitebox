@@ -1,0 +1,22 @@
+{
+  "name": "@startup/worker",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@startup/config": "workspace:*",
+    "@startup/contracts": "workspace:*",
+    "@startup/core": "workspace:*",
+    "@startup/database": "workspace:*",
+    "@startup/integrations": "workspace:*",
+    "drizzle-orm": "^0.38.4"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
