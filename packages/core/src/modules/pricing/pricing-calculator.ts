@@ -182,6 +182,8 @@ export class PricingCalculator {
       taxPaise,
       discountPaise,
       tipPaise,
+      foodTaxPaise,
+      foodDiscountPaise,
       payablePaise,
     };
   }

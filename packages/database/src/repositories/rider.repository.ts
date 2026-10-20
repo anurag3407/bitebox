@@ -474,6 +474,7 @@ export class RiderRepository {
             extra: { riderId: input.riderId },
           });
           await client.query(`UPDATE delivery_assignments SET completed_at = NOW() WHERE id = $1`, [trip.id]);
+          await JobRepository.enqueueWithClient(client, JobKind.ISSUE_INVOICE, { orderId: order.id }, { dedupeKey: `invoice:${order.id}` });
           break;
         }
 

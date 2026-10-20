@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { OrderRepository, RefundRepository, WebhookInboxRepository, getDb, paymentAttempts } from "@startup/database";
+import { OrderRepository, PayoutRepository, RefundRepository, WebhookInboxRepository, getDb, paymentAttempts } from "@startup/database";
 import { RazorpayAdapter } from "@startup/integrations";
 import { eq } from "drizzle-orm";
 import { logger } from "@/server/logger";
@@ -10,6 +10,7 @@ interface RazorpayWebhook {
   payload?: {
     payment?: { entity?: { id: string; order_id?: string; amount: number; currency: string; error_description?: string } };
     refund?: { entity?: { id: string; payment_id: string; amount: number; receipt?: string | null; status: string } };
+    payout?: { entity?: { id: string; status: string; utr?: string | null; status_details?: { description?: string } } };
   };
 }
 
@@ -64,6 +65,23 @@ async function applyEvent(event: RazorpayWebhook): Promise<"PROCESSED" | "IGNORE
         failureReason: event.event === "refund.failed" ? "Gateway reported refund failure" : undefined,
       });
       return result ? "PROCESSED" : "IGNORED";
+    }
+
+    // RazorpayX payout lifecycle (same webhook secret and endpoint)
+    case "payout.processed":
+    case "payout.failed":
+    case "payout.reversed":
+    case "payout.rejected": {
+      const entity = event.payload?.payout?.entity;
+      if (!entity) return "IGNORED";
+      const payout = await PayoutRepository.findByProviderId(entity.id);
+      if (!payout) return "IGNORED";
+      if (event.event === "payout.processed") {
+        await PayoutRepository.markPaid(payout.id, { utr: entity.utr ?? entity.id, providerPayoutId: entity.id });
+      } else {
+        await PayoutRepository.markFailed(payout.id, entity.status_details?.description ?? `Transfer ${entity.status}`);
+      }
+      return "PROCESSED";
     }
 
     default:

@@ -1,3 +1,4 @@
+import type { MenuItemInputRaw, RestaurantSettings, SupportCategory } from "@startup/contracts";
 import {
   AddressDto,
   CheckoutResponse,
@@ -136,6 +137,128 @@ export interface GeocodeResult {
   label: string;
   latitude: number;
   longitude: number;
+}
+
+
+export interface PartnerApplication {
+  id: string;
+  userId: string;
+  applicantName: string;
+  applicantEmail: string | null;
+  type: "MERCHANT" | "RIDER";
+  status: "SUBMITTED" | "APPROVED" | "REJECTED";
+  details: Record<string, any>;
+  reviewNote?: string;
+  createdAt: string;
+  reviewedAt?: string;
+  restaurantId?: string;
+}
+
+export interface AdminUser {
+  id: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  role: "CUSTOMER" | "MERCHANT_STAFF" | "RIDER" | "ADMIN";
+  isActive: boolean;
+  createdAt: string;
+  restaurants: string[];
+  riderId?: string;
+}
+
+export interface Payout {
+  id: string;
+  ownerType: "MERCHANT" | "RIDER";
+  ownerId: string;
+  ownerName: string;
+  periodStart: string;
+  periodEnd: string;
+  orderCount: number;
+  amountPaise: number;
+  status: "PENDING" | "MANUAL" | "PROCESSING" | "PAID" | "FAILED";
+  utr?: string;
+  failureReason?: string;
+  paidAt?: string;
+  createdAt: string;
+}
+
+export interface Earnings {
+  unsettledPaise: number;
+  unsettledOrders: number;
+  todayPaise: number;
+  todayOrders: number;
+  payouts: Payout[];
+  account: { accountHolderName: string; ifsc: string; accountLast4: string; updatedAt: string } | null;
+}
+
+export interface EditableMenuItem extends MenuItemInputRaw {
+  id: string;
+}
+
+export interface EditableMenu {
+  restaurant: {
+    id: string;
+    slug: string;
+    name: string;
+    description: string | null;
+    phone: string | null;
+    packagingFeePaise: number;
+    avgPrepMinutes: number;
+    avgPriceForOnePaise: number;
+    heroImageUrl: string | null;
+    isOpen: boolean;
+    openingHours: RestaurantSettings["openingHours"];
+  };
+  categories: Array<{ id: string; name: string; isActive: boolean; displayOrder: number; items: EditableMenuItem[] }>;
+}
+
+export interface SupportTicket {
+  id: string;
+  customerId: string;
+  customerName: string;
+  orderId?: string;
+  orderNumber?: string;
+  category: SupportCategory;
+  status: "OPEN" | "AWAITING_CUSTOMER" | "RESOLVED";
+  resolution?: string;
+  lastMessageAt: string;
+  createdAt: string;
+  lastMessage?: string;
+}
+
+export interface SupportThread {
+  ticket: SupportTicket;
+  messages: Array<{ id: string; senderType: "CUSTOMER" | "AGENT" | "SYSTEM"; senderName?: string; body: string; createdAt: string }>;
+}
+
+export interface InvoiceSectionDto {
+  title: string;
+  sac: string;
+  ratePercent: number;
+  lines: Array<{ description: string; quantity?: number; amountPaise: number }>;
+  discountPaise: number;
+  taxablePaise: number;
+  cgstPaise: number;
+  sgstPaise: number;
+  totalPaise: number;
+}
+
+export interface InvoiceDto {
+  invoice: {
+    invoiceNumber: string;
+    issuedAt: string;
+    orderNumber: string;
+    orderDate: string;
+    platform: { legalName: string; gstin: string; address: string };
+    restaurant: { name: string; address: string; gstin: string | null; fssai: string | null };
+    customer: { name: string; address: string };
+    food: InvoiceSectionDto;
+    services: InvoiceSectionDto;
+    tipPaise: number;
+    grandTotalPaise: number;
+    paymentMode: string;
+  };
+  creditNotes: Array<{ creditNoteNumber: string; invoiceNumber: string; issuedAt: string; amountPaise: number; taxablePaise: number; cgstPaise: number; sgstPaise: number; reason: string }>;
 }
 
 function qs(params: Record<string, string | number | boolean | undefined | null>): string {
@@ -442,5 +565,152 @@ export class ApiClient {
 
   async adminAssignRider(orderId: string, riderId: string, reason: string): Promise<void> {
     await this.request(`/api/v1/admin/orders/${orderId}/assign`, { method: "POST", body: JSON.stringify({ riderId, reason }) });
+  }
+
+  // 9. Partner onboarding
+  async getMyApplications(): Promise<PartnerApplication[]> {
+    return this.request("/api/v1/partner/applications");
+  }
+
+  async submitApplication(type: "MERCHANT" | "RIDER", details: Record<string, unknown>): Promise<PartnerApplication> {
+    return this.request("/api/v1/partner/applications", { method: "POST", body: JSON.stringify({ type, details }) });
+  }
+
+  async getApplications(status: "SUBMITTED" | "APPROVED" | "REJECTED" = "SUBMITTED"): Promise<PartnerApplication[]> {
+    return this.request(`/api/v1/admin/applications${qs({ status })}`);
+  }
+
+  async reviewApplication(id: string, decision: "APPROVE" | "REJECT", note?: string): Promise<PartnerApplication> {
+    return this.request(`/api/v1/admin/applications/${id}/review`, { method: "POST", body: JSON.stringify({ decision, note }) });
+  }
+
+  async searchUsers(q: string): Promise<AdminUser[]> {
+    return this.request(`/api/v1/admin/users${qs({ q })}`);
+  }
+
+  async updateUser(userId: string, update: { role?: AdminUser["role"]; isActive?: boolean; reason: string }): Promise<void> {
+    await this.request(`/api/v1/admin/users/${userId}`, { method: "PATCH", body: JSON.stringify(update) });
+  }
+
+  // 10. Menu editor & outlet settings
+  async getEditableMenu(restaurantId: string): Promise<EditableMenu> {
+    return this.request(`/api/v1/merchant/restaurants/${restaurantId}/menu`);
+  }
+
+  async createMenuCategory(restaurantId: string, name: string): Promise<{ id: string }> {
+    return this.request(`/api/v1/merchant/restaurants/${restaurantId}/menu/categories`, { method: "POST", body: JSON.stringify({ name }) });
+  }
+
+  async updateMenuCategory(restaurantId: string, categoryId: string, update: { name?: string; isActive?: boolean; displayOrder?: number }): Promise<void> {
+    await this.request(`/api/v1/merchant/restaurants/${restaurantId}/menu/categories/${categoryId}`, { method: "PATCH", body: JSON.stringify(update) });
+  }
+
+  async deleteMenuCategory(restaurantId: string, categoryId: string): Promise<void> {
+    await this.request(`/api/v1/merchant/restaurants/${restaurantId}/menu/categories/${categoryId}`, { method: "DELETE" });
+  }
+
+  async saveMenuItem(restaurantId: string, item: MenuItemInputRaw & { id?: string }): Promise<{ id: string }> {
+    const { id, ...body } = item;
+    return id
+      ? this.request(`/api/v1/merchant/restaurants/${restaurantId}/menu/items/${id}`, { method: "PUT", body: JSON.stringify(body) })
+      : this.request(`/api/v1/merchant/restaurants/${restaurantId}/menu/items`, { method: "POST", body: JSON.stringify(body) });
+  }
+
+  async deleteMenuItem(restaurantId: string, itemId: string): Promise<void> {
+    await this.request(`/api/v1/merchant/restaurants/${restaurantId}/menu/items/${itemId}`, { method: "DELETE" });
+  }
+
+  async uploadMenuImage(restaurantId: string, file: Blob): Promise<{ url: string }> {
+    return this.request(`/api/v1/merchant/restaurants/${restaurantId}/images`, {
+      method: "POST",
+      body: file,
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+    });
+  }
+
+  async updateRestaurantSettings(restaurantId: string, settings: Partial<RestaurantSettings>): Promise<void> {
+    await this.request(`/api/v1/merchant/restaurants/${restaurantId}/settings`, { method: "PATCH", body: JSON.stringify(settings) });
+  }
+
+  async getStaff(restaurantId: string): Promise<Array<{ userId: string; name: string; email: string | null; staffRole: string }>> {
+    return this.request(`/api/v1/merchant/restaurants/${restaurantId}/staff`);
+  }
+
+  async addStaff(restaurantId: string, email: string, staffRole: string): Promise<void> {
+    await this.request(`/api/v1/merchant/restaurants/${restaurantId}/staff`, { method: "POST", body: JSON.stringify({ email, staffRole }) });
+  }
+
+  async removeStaff(restaurantId: string, userId: string): Promise<void> {
+    await this.request(`/api/v1/merchant/restaurants/${restaurantId}/staff/${userId}`, { method: "DELETE" });
+  }
+
+  // 11. Earnings & payouts
+  async getMerchantEarnings(restaurantId: string): Promise<Earnings> {
+    return this.request(`/api/v1/merchant/restaurants/${restaurantId}/earnings`);
+  }
+
+  async saveMerchantPayoutAccount(restaurantId: string, account: { accountHolderName: string; ifsc: string; accountNumber: string }): Promise<{ accountLast4: string }> {
+    return this.request(`/api/v1/merchant/restaurants/${restaurantId}/payout-account`, { method: "PUT", body: JSON.stringify(account) });
+  }
+
+  async getRiderEarnings(): Promise<Earnings> {
+    return this.request("/api/v1/rider/earnings");
+  }
+
+  async saveRiderPayoutAccount(account: { accountHolderName: string; ifsc: string; accountNumber: string }): Promise<{ accountLast4: string }> {
+    return this.request("/api/v1/rider/payout-account", { method: "PUT", body: JSON.stringify(account) });
+  }
+
+  async getAdminPayouts(status?: Payout["status"]): Promise<Payout[]> {
+    return this.request(`/api/v1/admin/payouts${qs({ status })}`);
+  }
+
+  async runSettlement(): Promise<{ created: number }> {
+    return this.request("/api/v1/admin/payouts/run", { method: "POST" });
+  }
+
+  async markPayoutPaid(payoutId: string, utr: string): Promise<void> {
+    await this.request(`/api/v1/admin/payouts/${payoutId}/mark-paid`, { method: "POST", body: JSON.stringify({ utr }) });
+  }
+
+  async switchPayoutToManual(payoutId: string): Promise<void> {
+    await this.request(`/api/v1/admin/payouts/${payoutId}/manual`, { method: "POST" });
+  }
+
+  // 12. Invoices, calls, support, privacy
+  async getInvoice(orderId: string): Promise<InvoiceDto> {
+    return this.request(`/api/v1/orders/${orderId}/invoice`);
+  }
+
+  async placeCall(orderId: string, target: "RIDER" | "CUSTOMER" | "RESTAURANT"): Promise<{ mode: "BRIDGED"; message: string } | { mode: "DIRECT"; phone: string }> {
+    return this.request(`/api/v1/orders/${orderId}/call`, { method: "POST", body: JSON.stringify({ target }) });
+  }
+
+  async getMyTickets(): Promise<SupportTicket[]> {
+    return this.request("/api/v1/support");
+  }
+
+  async openTicket(input: { orderId?: string; category: SupportCategory; message: string }): Promise<{ ticketId: string }> {
+    return this.request("/api/v1/support", { method: "POST", body: JSON.stringify(input) });
+  }
+
+  async getTicket(ticketId: string, asAdmin = false): Promise<SupportThread> {
+    return this.request(asAdmin ? `/api/v1/admin/support/${ticketId}` : `/api/v1/support/${ticketId}`);
+  }
+
+  async replyToTicket(ticketId: string, body: string, asAdmin = false): Promise<void> {
+    await this.request(asAdmin ? `/api/v1/admin/support/${ticketId}` : `/api/v1/support/${ticketId}`, { method: "POST", body: JSON.stringify({ body }) });
+  }
+
+  async getSupportQueue(status?: SupportTicket["status"]): Promise<SupportTicket[]> {
+    return this.request(`/api/v1/admin/support${qs({ status })}`);
+  }
+
+  async resolveTicket(ticketId: string, resolution: string): Promise<void> {
+    await this.request(`/api/v1/admin/support/${ticketId}/resolve`, { method: "POST", body: JSON.stringify({ resolution }) });
+  }
+
+  async deleteAccount(): Promise<void> {
+    await this.request("/api/v1/me", { method: "DELETE", body: JSON.stringify({ confirm: "DELETE" }) });
   }
 }

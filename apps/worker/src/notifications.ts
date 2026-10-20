@@ -244,6 +244,35 @@ export class NotificationService {
         return;
       }
 
+      case "support.agent_replied":
+        await this.pushToUser(String(p.customerId), {
+          title: "Support replied",
+          body: String(p.preview ?? "You have a new message from support"),
+          url: `/support/${p.ticketId}`,
+          tag: `support-${p.ticketId}`,
+        });
+        return;
+
+      case "payout.paid": {
+        const owner = await getDbPool().query(
+          p.ownerType === "MERCHANT" ? `SELECT owner_user_id AS user_id FROM merchants WHERE id = $1` : `SELECT user_id FROM riders WHERE id = $1`,
+          [p.ownerId]
+        );
+        if (owner.rows[0]?.user_id) {
+          await this.pushToUser(owner.rows[0].user_id, {
+            title: "Payout sent",
+            body: `${rupees(Number(p.amountPaise))} has been transferred to your bank account.`,
+            url: p.ownerType === "MERCHANT" ? "/merchant?tab=earnings" : "/rider?tab=earnings",
+            tag: `payout-${p.payoutId}`,
+          });
+        }
+        return;
+      }
+
+      case "payout.failed":
+        await this.alertOps("Partner payout failed", p);
+        return;
+
       case "refund.failed":
         await this.alertOps("Refund failed at gateway", p);
         return;

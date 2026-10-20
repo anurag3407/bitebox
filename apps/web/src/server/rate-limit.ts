@@ -17,6 +17,10 @@ export const RateLimits = {
   otpAttempt: { limit: 10, windowSeconds: 300 },
   mutation: { limit: 60, windowSeconds: 60 },
   webhook: { limit: 600, windowSeconds: 60 },
+  call: { limit: 6, windowSeconds: 600 },
+  support: { limit: 20, windowSeconds: 300 },
+  upload: { limit: 30, windowSeconds: 600 },
+  partnerApplication: { limit: 5, windowSeconds: 3600 },
 } as const;
 
 /**

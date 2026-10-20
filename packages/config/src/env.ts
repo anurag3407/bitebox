@@ -63,6 +63,34 @@ export const ServerEnvSchema = z.object({
   // Security
   OTP_ENCRYPTION_KEY: z.string().min(16).default("0123456789abcdef0123456789abcdef"),
 
+  // RazorpayX (payouts). Without it payouts are created as MANUAL for bank transfer + UTR entry.
+  RAZORPAYX_ACCOUNT_NUMBER: z.string().optional(),
+
+  // Exotel bridged ("masked") calling between customer, rider and restaurant
+  EXOTEL_SID: z.string().optional(),
+  EXOTEL_API_KEY: z.string().optional(),
+  EXOTEL_API_TOKEN: z.string().optional(),
+  // Virtual number (ExoPhone) both parties see
+  EXOTEL_CALLER_ID: z.string().optional(),
+  EXOTEL_SUBDOMAIN: z.string().default("api.exotel.com"),
+
+  // Supabase Storage for menu photos (optional; merchants can paste image URLs instead)
+  SUPABASE_URL: z.string().url().optional(),
+  SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
+  SUPABASE_STORAGE_BUCKET: z.string().default("menu-images"),
+
+  // Encrypts partner bank details at rest (falls back to OTP_ENCRYPTION_KEY)
+  DATA_ENCRYPTION_KEY: z.string().min(32).optional(),
+
+  // Legal entity shown on GST invoices and legal pages
+  PLATFORM_LEGAL_NAME: z.string().default("ZomatoFresh Technologies Pvt Ltd"),
+  PLATFORM_GSTIN: z.string().optional(),
+  PLATFORM_ADDRESS: z.string().default("Registered office address not configured"),
+  INVOICE_PREFIX: z.string().regex(/^[A-Z]{1,4}$/).default("ZF"),
+  SUPPORT_EMAIL: z.string().email().default("support@fooddelivery.local"),
+  GRIEVANCE_OFFICER_NAME: z.string().default("Grievance Officer (not configured)"),
+  GRIEVANCE_OFFICER_EMAIL: z.string().email().default("grievance@fooddelivery.local"),
+
   // Operations alerts (dispatch escalations, payment anomalies) are emailed here when set
   OPS_ALERT_EMAIL: z.string().email().optional(),
 
@@ -112,6 +140,10 @@ export function findInsecureSettings(env: ServerEnv): string[] {
     problems.push("RAZORPAY_KEY_ID (or NEXT_PUBLIC_RAZORPAY_KEY_ID) is required");
   }
   if (env.AUTH_DEMO_MODE === "true") problems.push("AUTH_DEMO_MODE must not be enabled");
+  if (!env.PLATFORM_GSTIN) problems.push("PLATFORM_GSTIN is required to issue GST invoices");
+  if (!env.DATA_ENCRYPTION_KEY || PLACEHOLDER_PATTERN.test(env.DATA_ENCRYPTION_KEY)) {
+    problems.push("DATA_ENCRYPTION_KEY is required to store partner bank details");
+  }
   if (!env.APP_ORIGIN.startsWith("https://")) problems.push("APP_ORIGIN must be an https:// URL");
   if (/localhost|127\.0\.0\.1/.test(env.DATABASE_URL)) problems.push("DATABASE_URL points at localhost");
   return problems;
@@ -174,4 +206,9 @@ export function getClientEnv(): ClientEnv {
   }
   cachedClientEnv = parsed.data;
   return cachedClientEnv;
+}
+
+export function getDataEncryptionKey(): string {
+  const env = getServerEnv();
+  return env.DATA_ENCRYPTION_KEY ?? env.OTP_ENCRYPTION_KEY;
 }

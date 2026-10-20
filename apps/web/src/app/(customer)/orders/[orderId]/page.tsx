@@ -4,10 +4,12 @@ import React, { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Bike, CheckCircle2, Clock, KeyRound, MapPin, Phone, ShieldAlert, Star, Store, RotateCcw } from "lucide-react";
+import { ArrowLeft, Bike, CheckCircle2, Clock, FileText, HelpCircle, KeyRound, MapPin, ShieldAlert, Star, Store, RotateCcw } from "lucide-react";
 import { FulfillmentState } from "@startup/contracts";
 import type { TrackingSnapshot } from "@startup/api-client";
 import { TrackingMap } from "@/components/tracking/tracking-map";
+import { CallButton } from "@/components/support/call-button";
+import { HelpSheet } from "@/components/support/help-sheet";
 import { Modal } from "@/components/ui/modal";
 import { EmptyState, Spinner } from "@/components/ui/misc";
 import { useToast } from "@/components/ui/toast";
@@ -105,6 +107,7 @@ export default function OrderTrackingPage() {
   const [liveStatus, setLiveStatus] = useState<"connecting" | "open" | "retrying" | "closed">("connecting");
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
 
   const key = ["tracking", orderId];
   const tracking = useQuery({
@@ -241,11 +244,7 @@ export default function OrderTrackingPage() {
                   </p>
                 </div>
               </div>
-              {snapshot.rider.phone && !delivered && (
-                <a href={`tel:${snapshot.rider.phone}`} className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-border text-xs font-bold">
-                  <Phone className="w-4 h-4" /> Call
-                </a>
-              )}
+              {!snapshot.isTerminal && snapshot.rider.tripStatus !== "COMPLETED" && <CallButton orderId={orderId} target="RIDER" label="Call" />}
             </div>
           ) : (
             !snapshot.isTerminal && <p className="text-xs text-text-secondary">We&apos;ll assign a delivery partner as your food nears ready.</p>
@@ -356,12 +355,20 @@ export default function OrderTrackingPage() {
             <RotateCcw className="w-4 h-4" /> Reorder
           </button>
         )}
-        {order.restaurant.phone && !snapshot.isTerminal && (
-          <a href={`tel:${order.restaurant.phone}`} className="px-4 py-2.5 rounded-xl border border-border text-sm font-bold flex items-center gap-1.5">
-            <Phone className="w-4 h-4" /> Call restaurant
-          </a>
+        {!snapshot.isTerminal && (
+          <CallButton orderId={orderId} target="RESTAURANT" label="Call restaurant" className="px-4 py-2.5 rounded-xl border border-border text-sm font-bold flex items-center gap-1.5" />
         )}
+        {delivered && (
+          <Link href={`/orders/${orderId}/invoice`} className="px-4 py-2.5 rounded-xl border border-border text-sm font-bold flex items-center gap-1.5">
+            <FileText className="w-4 h-4" /> Invoice
+          </Link>
+        )}
+        <button onClick={() => setHelpOpen(true)} className="px-4 py-2.5 rounded-xl border border-border text-sm font-bold flex items-center gap-1.5">
+          <HelpCircle className="w-4 h-4" /> Get help
+        </button>
       </div>
+
+      <HelpSheet orderId={orderId} open={helpOpen} onClose={() => setHelpOpen(false)} />
 
       <Modal
         open={cancelOpen}

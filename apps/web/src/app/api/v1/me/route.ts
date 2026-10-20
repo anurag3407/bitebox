@@ -1,6 +1,8 @@
-import { UpdateProfileRequestSchema, UserRole } from "@startup/contracts";
+import { UpdateProfileRequestSchema, UserRole, z } from "@startup/contracts";
 import { DomainError } from "@startup/core";
-import { RestaurantRepository, RiderRepository, appUsers, getDb } from "@startup/database";
+import { PrivacyRepository, RestaurantRepository, RiderRepository, appUsers, getDb } from "@startup/database";
+import { getServerEnv, isMockSecret } from "@startup/config";
+import { logger } from "@/server/logger";
 import { eq } from "drizzle-orm";
 import { apiSuccess } from "@/server/api-response";
 import { requireAuth } from "@/server/auth-guard";
@@ -54,4 +56,25 @@ export const PATCH = route(async (req, _ctx, requestId) => {
     200,
     { requestId }
   );
+});
+
+/**
+ * Account deletion (DPDP right to erasure). Personal data is scrubbed; order and invoice
+ * records are retained in anonymised form as required by tax law.
+ */
+export const DELETE = route(async (req, _ctx, requestId) => {
+  const { user } = await requireAuth(req);
+  await parseBody(req, z.object({ confirm: z.literal("DELETE") }));
+  const { clerkUserId } = await PrivacyRepository.deleteAccount(user.id);
+
+  // Best effort: remove the identity at Clerk too so the person cannot sign back into this record
+  const secret = getServerEnv().CLERK_SECRET_KEY;
+  if (!isMockSecret(secret) && !clerkUserId.startsWith("user_clerk_")) {
+    await fetch(`https://api.clerk.com/v1/users/${encodeURIComponent(clerkUserId)}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${secret}` },
+      signal: AbortSignal.timeout(5000),
+    }).catch((err) => logger.warn("clerk user deletion failed", { requestId, error: (err as Error).message }));
+  }
+  return apiSuccess({ deleted: true }, 200, { requestId });
 });

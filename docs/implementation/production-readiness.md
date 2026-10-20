@@ -76,21 +76,35 @@ order timeline, discretionary refunds/cancels, manual rider assignment, ledger b
 
 ## 4. Gaps remaining (prioritised)
 
+**Delivered in the second pass (2026-10-20)** — see §5.
+Partner onboarding + admin role management, payouts, GST invoices & credit notes, legal pages
+(+ DPDP export/deletion), merchant menu editor, support chat, masked calling.
+
 **Before real launch (P0)**
-- Provision Clerk, Razorpay (live + webhook), Upstash, Mapbox, VAPID keys; run `deploy.sh` once on staging. The Docker images and compose stack were **not built in this environment**.
-- Merchant & rider onboarding (KYC, FSSAI, bank details) and an admin UI to grant roles; today roles are granted in SQL.
-- Payouts: settle `MERCHANT_PAYABLE` / `RIDER_PAYABLE` (Razorpay Route or bank transfers) and reconciliation reports.
-- GST invoices per order; legal pages (terms, privacy, refund policy); DPDP-compliant data deletion/export.
-- Monitoring: ship JSON logs, alert on `/health/ready`, outbox backlog, failed jobs, ledger imbalance.
-- Load test checkout and SSE at expected peak; tune `DATABASE_POOL_MAX` against the Supabase pooler.
+- Provision Clerk, Razorpay (+ RazorpayX), Upstash, Mapbox, Exotel, Supabase Storage, VAPID keys; run `deploy.sh` on staging. Docker images were **not built in this environment**.
+- **Have a CA confirm the GST treatment** (section 9(5) restaurant services at 5% paid by the platform, 18% on delivery/platform fee, intra-state CGST/SGST split, credit-note apportionment at the food rate) and **have counsel review the legal pages**. Inter-state supply (IGST) is not handled.
+- KYC verification is manual: admins check FSSAI/PAN/GSTIN/licences outside the app before approving. Integrate a verification API (e.g. FSSAI FoSCoS, NSDL PAN, bank penny-drop) before scaling onboarding.
+- Monitoring: ship JSON logs, alert on `/health/ready`, outbox backlog, failed jobs/payouts, ledger imbalance.
+- Load test checkout and SSE at expected peak.
 
 **Product parity (P1)**
-- Menu management UI for merchants (create/edit items, prices, photos, schedules) — currently seed/SQL.
-- Restaurant onboarding of opening hours/holidays from the console; scheduled orders; cash on delivery.
-- Customer support chat / help centre, issue reporting with photos, auto-refund rules for missing items.
-- Rider earnings dashboard, shift incentives, batching (two orders per trip), surge from live demand.
-- Masked calling between rider and customer (current links expose real numbers).
-- Search: typo tolerance (pg_trgm similarity ranking is indexed but not yet used for scoring), dish-level autocomplete.
-- Personalised home feed (recently ordered, collections), Zomato Gold-style membership, referrals, wallet.
+- Scheduled orders, cash on delivery, rider batching, live surge pricing, membership/referrals/wallet.
+- Support: photo attachments, auto-refund rules for common issues, agent assignment/SLAs, canned replies.
+- Search ranking with typo tolerance; personalised home feed; restaurant analytics for merchants.
+- Merchant-funded coupons and per-restaurant commission management UI; TDS (194-O) on merchant payouts.
 
 **Scale (P2)** — see §2 scaling path; native apps can reuse `@startup/api-client` and `/api/v1` as is.
+
+## 5. Operations features (second pass)
+
+| Feature | How it works | Key safeguards | Tests |
+|---|---|---|---|
+| Partner onboarding | `/partner` application (restaurant: FSSAI, PAN, GSTIN, pinned location; rider: vehicle, licence) → admin review → one transaction creates merchant + restaurant (paused) + OWNER membership, or rider profile, and sets the role | One open application per user/type; outlet must be inside a service zone; one role per account; audit log | `operations.test.ts` |
+| Admin roles | Operations → Users: search, change role, suspend | Cannot change own account; demoting a rider is refused mid-trip and revokes offers; demoting staff deactivates memberships; reason required, audited | `operations.test.ts` |
+| Staff | Owners add existing accounts as Manager / Kitchen / Menu editor | Staff roles gate actions: kitchen = orders & stock, editor = menu, manager = outlet settings, owner = staff & payouts | `operations.test.ts` |
+| Menu editor | Categories, dishes, portions, add-on groups, photos (Supabase upload or URL), opening hours, fees | Restaurant-scoped writes; child ids preserved so carts stay valid; archive instead of delete; bounds validated; public menu cache invalidated | `operations.test.ts` |
+| Payouts | Weekly settlement (Monday 00:00 IST cutoff) of delivered orders → one payout per merchant/rider → RazorpayX transfer, or manual transfer + UTR | Earnings computed by the same `SettlementCalculator` as the capture ledger; unique (order, party) prevents double payment; ₹100 minimum rolls over; provider idempotency key = payout id; bank numbers AES-256-GCM encrypted; ledger posting on payment | `operations.test.ts` |
+| GST invoices | Issued by the worker when an order is delivered; printable at `/orders/:id/invoice` | Gapless per-FY numbering via a row-locked sequence (rollback-safe), ≤16 chars; immutable snapshot; credit note for every processed refund on an invoiced order | `operations.test.ts`, `hardening.test.ts` |
+| Legal & privacy | `/legal/{terms,privacy,refunds,grievance}` reflecting the policies the code enforces; account → download data / delete account | Deletion refused mid-order and for partners; personal data scrubbed, tax records kept anonymised; Clerk user deleted | `operations.test.ts` |
+| Support chat | "Get help" on an order → ticket chat; agent queue with refund and resolve | One open ticket per order; customers see only their tickets; agent replies push-notify; customer reply reopens | `operations.test.ts` |
+| Masked calling | `POST /orders/:id/call` → Exotel rings the caller and bridges from a virtual number | Numbers removed from all order/tracking payloads; who-can-call-whom and when enforced server-side; rate limited; every call logged. Without Exotel the number is revealed only to an authorised participant | `operations.test.ts` |

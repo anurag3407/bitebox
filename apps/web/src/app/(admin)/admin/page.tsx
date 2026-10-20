@@ -2,10 +2,14 @@
 
 import React, { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, CheckCircle2, RefreshCw } from "lucide-react";
+import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import { FulfillmentState } from "@startup/contracts";
 import type { AdminOrderRow } from "@startup/api-client";
 import { PortalHeader, RoleGate } from "@/components/portal/role-gate";
+import { ApplicationsTab } from "@/components/admin/applications";
+import { PayoutsTab } from "@/components/admin/payouts";
+import { SupportTab } from "@/components/admin/support";
+import { UsersTab } from "@/components/admin/users";
 import { Modal } from "@/components/ui/modal";
 import { Spinner } from "@/components/ui/misc";
 import { useToast } from "@/components/ui/toast";
@@ -152,7 +156,43 @@ function OrderDrawer({ order, onClose }: { order: AdminOrderRow; onClose: () => 
   );
 }
 
+type AdminTab = "orders" | "support" | "applications" | "users" | "payouts";
+const ADMIN_TABS: Array<[AdminTab, string]> = [
+  ["orders", "Orders"],
+  ["support", "Support"],
+  ["applications", "Partner applications"],
+  ["users", "Users & roles"],
+  ["payouts", "Payouts"],
+];
+
 function AdminConsole() {
+  const [tab, setTab] = useState<AdminTab>("orders");
+  return (
+    <>
+      <PortalHeader title="Operations" />
+      <div className="max-w-7xl mx-auto px-4 pt-4">
+        <nav className="flex gap-2 overflow-x-auto">
+          {ADMIN_TABS.map(([id, label]) => (
+            <button key={id} onClick={() => setTab(id)} className={`shrink-0 px-4 py-2 rounded-full text-sm font-bold border ${tab === id ? "bg-brand text-white border-brand" : "border-border"}`}>
+              {label}
+            </button>
+          ))}
+        </nav>
+      </div>
+      {tab === "orders" && <OrdersBoard />}
+      {tab !== "orders" && (
+        <div className="max-w-7xl mx-auto px-4 py-5">
+          {tab === "support" && <SupportTab />}
+          {tab === "applications" && <ApplicationsTab />}
+          {tab === "users" && <UsersTab />}
+          {tab === "payouts" && <PayoutsTab />}
+        </div>
+      )}
+    </>
+  );
+}
+
+function OrdersBoard() {
   const api = useApi();
   const [state, setState] = useState<FulfillmentState | "">("");
   const [stuck, setStuck] = useState(false);
@@ -170,7 +210,6 @@ function AdminConsole() {
 
   return (
     <>
-      <PortalHeader title="Operations" right={overview.isFetching ? <Spinner /> : <RefreshCw className="w-4 h-4 opacity-60" />} />
       <div className="max-w-7xl mx-auto px-4 py-5 space-y-6">
         {o && (
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">

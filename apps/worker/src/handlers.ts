@@ -9,9 +9,19 @@ import {
   OutboxRepository,
   RefundRepository,
   RiderRepository,
+  InvoiceRepository,
+  PayoutRepository,
   getDbPool,
 } from "@startup/database";
-import { ProviderRejectedError, ProviderUnavailableError, RazorpayAdapter, getRedis } from "@startup/integrations";
+import {
+  ProviderRejectedError,
+  ProviderUnavailableError,
+  RazorpayAdapter,
+  RazorpayXAdapter,
+  RazorpayXPayout,
+  getRedis,
+} from "@startup/integrations";
+import { getDataEncryptionKey, getServerEnv } from "@startup/config";
 import { logger } from "./logger.js";
 
 // Retry dispatch every 30s; alert ops after ~5 minutes without a rider, keep trying
@@ -244,7 +254,114 @@ export async function handleMaintenance(): Promise<void> {
   }
 }
 
+// ---- Invoices -------------------------------------------------------------
+export function platformEntity() {
+  const env = getServerEnv();
+  return {
+    legalName: env.PLATFORM_LEGAL_NAME,
+    gstin: env.PLATFORM_GSTIN ?? "GSTIN not configured",
+    address: env.PLATFORM_ADDRESS,
+    invoicePrefix: env.INVOICE_PREFIX,
+  };
+}
+
+export async function handleIssueInvoice(job: ClaimedJob): Promise<void> {
+  await InvoiceRepository.issueForOrder(str(job.payload, "orderId"), platformEntity());
+}
+
+export async function handleIssueCreditNote(job: ClaimedJob): Promise<void> {
+  await InvoiceRepository.issueCreditNote(str(job.payload, "refundId"), getServerEnv().INVOICE_PREFIX);
+}
+
+// ---- Payouts --------------------------------------------------------------
+const PAYOUT_RECHECK_MS = 30 * 60 * 1000;
+
+/** Applies a RazorpayX payout status to our payout record. */
+export async function applyPayoutStatus(payoutId: string, payout: RazorpayXPayout): Promise<void> {
+  if (payout.status === "processed") {
+    await PayoutRepository.markPaid(payoutId, { utr: payout.utr ?? payout.id, providerPayoutId: payout.id });
+  } else if (["failed", "rejected", "reversed", "cancelled"].includes(payout.status)) {
+    await PayoutRepository.markFailed(payoutId, payout.failureReason ?? `Transfer ${payout.status}`);
+  } else {
+    await PayoutRepository.markProcessing(payoutId, payout.id);
+    await JobRepository.enqueue(JobKind.PAYOUT_STATUS_CHECK, { payoutId }, {
+      runAt: new Date(Date.now() + PAYOUT_RECHECK_MS),
+      dedupeKey: `payout-check:${payoutId}:${Date.now()}`,
+    });
+  }
+}
+
+/**
+ * Transfers a pending payout through RazorpayX. The payout id is the provider idempotency
+ * key, so a retry after a timeout returns the original transfer instead of paying twice.
+ */
+export async function handlePayoutSubmit(job: ClaimedJob, gateway = new RazorpayXAdapter()): Promise<void> {
+  const payoutId = str(job.payload, "payoutId");
+  const payout = await PayoutRepository.findById(payoutId);
+  if (!payout || (payout.status !== "PENDING" && payout.status !== "PROCESSING")) return;
+
+  const account = await PayoutRepository.getAccountForTransfer(payout.ownerType, payout.ownerId, getDataEncryptionKey());
+  if (!account) {
+    await PayoutRepository.markFailed(payoutId, "No bank account on file");
+    return;
+  }
+  try {
+    let fundAccountId = account.providerFundAccountId;
+    if (!fundAccountId) {
+      const refs = await gateway.ensureFundAccount({
+        referenceId: payout.ownerId,
+        name: account.accountHolderName,
+        type: payout.ownerType === "MERCHANT" ? "vendor" : "employee",
+        ifsc: account.ifsc,
+        accountNumber: account.accountNumber,
+      });
+      await PayoutRepository.saveProviderRefs(account.id, refs.contactId, refs.fundAccountId);
+      fundAccountId = refs.fundAccountId;
+    }
+    const result = await gateway.createPayout({
+      fundAccountId,
+      amountPaise: payout.amountPaise,
+      idempotencyKey: payoutId,
+      narration: `ZomatoFresh payout ${payout.orderCount} orders`,
+    });
+    await applyPayoutStatus(payoutId, result);
+  } catch (err) {
+    if (err instanceof ProviderRejectedError) {
+      await PayoutRepository.markFailed(payoutId, err.body || err.message);
+      return;
+    }
+    throw err; // network/5xx: retried with backoff, idempotency key prevents double payment
+  }
+}
+
+export async function handlePayoutStatusCheck(job: ClaimedJob, gateway = new RazorpayXAdapter()): Promise<void> {
+  const payout = await PayoutRepository.findById(str(job.payload, "payoutId"));
+  if (!payout || payout.status !== "PROCESSING") return;
+  const res = await getDbPool().query(`SELECT provider_payout_id FROM payouts WHERE id = $1`, [payout.id]);
+  if (!res.rows[0]?.provider_payout_id) return;
+  await applyPayoutStatus(payout.id, await gateway.fetchPayout(res.rows[0].provider_payout_id));
+}
+
+/** Monday 00:00 IST of the current week: settlement covers deliveries before this instant. */
+export function settlementCutoff(now = new Date()): Date {
+  const ist = new Date(now.getTime() + 330 * 60_000);
+  const daysSinceMonday = (ist.getUTCDay() + 6) % 7;
+  const mondayIst = Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate() - daysSinceMonday);
+  return new Date(mondayIst - 330 * 60_000);
+}
+
+export async function handleWeeklySettlement(job: ClaimedJob): Promise<void> {
+  const cutoff = typeof job.payload.cutoff === "string" ? new Date(job.payload.cutoff) : settlementCutoff();
+  const created = await PayoutRepository.runSettlement(cutoff, { automaticTransfers: new RazorpayXAdapter().isEnabled });
+  if (created.length) logger.info("settlement created payouts", { cutoff: cutoff.toISOString(), count: created.length });
+}
+
 export const JOB_HANDLERS: Record<string, (job: ClaimedJob) => Promise<void>> = {
+  [JobKind.ISSUE_INVOICE]: handleIssueInvoice,
+  [JobKind.ISSUE_CREDIT_NOTE]: handleIssueCreditNote,
+  [JobKind.PAYOUT_SUBMIT]: (job) => handlePayoutSubmit(job),
+  [JobKind.PAYOUT_STATUS_CHECK]: (job) => handlePayoutStatusCheck(job),
+  [JobKind.WEEKLY_SETTLEMENT]: handleWeeklySettlement,
   [JobKind.MERCHANT_ACCEPTANCE_TIMEOUT]: handleMerchantAcceptanceTimeout,
   [JobKind.PAYMENT_EXPIRY]: (job) => handlePaymentExpiry(job),
   [JobKind.DISPATCH_ORDER]: handleDispatchOrder,

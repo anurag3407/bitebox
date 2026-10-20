@@ -1,5 +1,5 @@
 import { ClaimedJob, JobKind, JobRepository, OutboxRepository } from "@startup/database";
-import { JOB_HANDLERS } from "./handlers.js";
+import { JOB_HANDLERS, settlementCutoff } from "./handlers.js";
 import { logger } from "./logger.js";
 import { NotificationService } from "./notifications.js";
 
@@ -69,6 +69,12 @@ export class WorkerRunner {
   async scheduleMaintenance(): Promise<void> {
     const bucket = Math.floor(Date.now() / MAINTENANCE_INTERVAL_MS);
     await JobRepository.enqueue(JobKind.MAINTENANCE, {}, { dedupeKey: `maintenance:${bucket}`, maxAttempts: 1 });
+    // Once per week (dedupe key = the week's cutoff); safe to enqueue from every worker
+    const cutoff = settlementCutoff();
+    await JobRepository.enqueue(JobKind.WEEKLY_SETTLEMENT, { cutoff: cutoff.toISOString() }, {
+      dedupeKey: `settlement:${cutoff.toISOString()}`,
+      maxAttempts: 5,
+    });
   }
 
   private loop(name: string, intervalMs: number, fn: () => Promise<number | void>): void {

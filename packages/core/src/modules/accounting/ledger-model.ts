@@ -1,3 +1,5 @@
+import { SettlementCalculator } from "../payouts/settlement.js";
+
 export const LedgerAccountType = {
   GATEWAY_CLEARING: "GATEWAY_CLEARING",
   MERCHANT_PAYABLE: "MERCHANT_PAYABLE",
@@ -70,10 +72,9 @@ export class LedgerEngine {
     const surgePaise = input.surgePaise ?? 0;
     const tipPaise = input.tipPaise ?? 0;
 
-    const platformCommissionFromFood = Math.round((input.subtotalPaise * commissionBp) / 10000);
-    const merchantPayable = input.subtotalPaise - platformCommissionFromFood + input.packagingPaise;
-    const platformRevenue = platformCommissionFromFood + input.platformFeePaise;
-    const riderPayable = input.deliveryFeePaise + surgePaise + tipPaise;
+    const merchantPayable = SettlementCalculator.merchantEarning(input, commissionBp);
+    const platformRevenue = SettlementCalculator.platformRevenue(input, commissionBp);
+    const riderPayable = SettlementCalculator.riderEarning({ ...input, surgePaise, tipPaise });
 
     const entries: LedgerEntry[] = [
       {
@@ -146,4 +147,24 @@ export class LedgerEngine {
 
     return entries;
   }
+}
+
+/** Cash leaving the platform to settle what we owe a merchant or rider. */
+export function buildPayoutEntries(ownerType: "MERCHANT" | "RIDER", amountPaise: number, reference: string): LedgerEntry[] {
+  const entries: LedgerEntry[] = [
+    {
+      account: ownerType === "MERCHANT" ? LedgerAccountType.MERCHANT_PAYABLE : LedgerAccountType.RIDER_PAYABLE,
+      debitPaise: amountPaise,
+      creditPaise: 0,
+      description: `Payout settled (${reference})`,
+    },
+    {
+      account: LedgerAccountType.GATEWAY_CLEARING,
+      debitPaise: 0,
+      creditPaise: amountPaise,
+      description: `Funds transferred to ${ownerType.toLowerCase()} (${reference})`,
+    },
+  ];
+  if (!LedgerEngine.validateBalanced(entries)) throw new Error("Payout ledger entries are not balanced");
+  return entries;
 }

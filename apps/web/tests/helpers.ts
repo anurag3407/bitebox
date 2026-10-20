@@ -136,3 +136,51 @@ export const MENU = {
   mintDip: "b0000000-0000-4000-8000-000000000010",
   garlicDip: "b0000000-0000-4000-8000-000000000011",
 };
+
+/**
+ * Drives an order from checkout to DELIVERED through the real repositories
+ * (no HTTP), for tests that only care about what happens after delivery.
+ */
+export async function deliverOrder(options: { restaurantId?: string; rider?: Awaited<ReturnType<typeof createRider>> } = {}) {
+  const { OrderRepository, RiderRepository } = await import("@startup/database");
+  const { FulfillmentState, DeliveryTripStatus } = await import("@startup/contracts");
+  const customer = await createCustomerWithAddress();
+  const rider = options.rider ?? (await createRider());
+  const breakdown = {
+    subtotalPaise: 56000,
+    packagingPaise: 2000,
+    deliveryFeePaise: 3000,
+    platformFeePaise: 500,
+    surgePaise: 0,
+    // 5% of ₹560 food + 18% of ₹55 delivery/packaging/platform
+    taxPaise: 2800 + 990,
+    discountPaise: 0,
+    tipPaise: 2000,
+    foodTaxPaise: 2800,
+    foodDiscountPaise: 0,
+    payablePaise: 56000 + 2000 + 3000 + 500 + 3790 + 2000,
+  };
+  const created = await OrderRepository.createWithIdempotency({
+    idempotencyKey: `idem_${randomUUID()}`,
+    principalId: customer.userId,
+    requestHash: "h",
+    customerId: customer.userId,
+    restaurantId: options.restaurantId ?? SEED_IDS.restaurant1Id,
+    deliveryAddressId: customer.addressId,
+    orderNumber: `ORD-T-${randomUUID().slice(0, 8).toUpperCase()}`,
+    items: [{ menuItemId: MENU.paneerTikka, name: "Paneer Tikka Shashlik", quantity: 2, basePricePaise: 28000, optionsPricePaise: 0, lineTotalPaise: 56000, selectedOptionNames: [] }],
+    breakdown,
+    payablePaise: breakdown.payablePaise,
+    deliveryOtp: "1234",
+    pickupOtp: "5678",
+    estimatedDeliveryMinutes: 30,
+    razorpayOrderId: `order_${randomUUID().slice(0, 14)}`,
+  });
+  await OrderRepository.recordPaymentCapture({ orderId: created.orderId, providerPaymentId: `pay_${randomUUID().slice(0, 14)}`, amountPaise: breakdown.payablePaise, paymentAttemptId: created.paymentAttemptId });
+  await OrderRepository.updateFulfillmentState({ orderId: created.orderId, fromState: FulfillmentState.AWAITING_MERCHANT, toState: FulfillmentState.ACCEPTED, actorType: "MERCHANT" });
+  await OrderRepository.updateFulfillmentState({ orderId: created.orderId, fromState: FulfillmentState.ACCEPTED, toState: FulfillmentState.READY_FOR_PICKUP, actorType: "MERCHANT" });
+  const { assignmentId } = await RiderRepository.assignManually({ orderId: created.orderId, riderId: rider.riderId, adminId: customer.userId, reason: "test" });
+  await RiderRepository.advanceTrip({ assignmentId, riderId: rider.riderId, nextStatus: DeliveryTripStatus.PICKED_UP });
+  await RiderRepository.advanceTrip({ assignmentId, riderId: rider.riderId, nextStatus: DeliveryTripStatus.COMPLETED, challengeCode: "1234" });
+  return { orderId: created.orderId, customer, rider, breakdown, assignmentId };
+}

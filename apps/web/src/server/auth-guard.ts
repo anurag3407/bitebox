@@ -44,12 +44,29 @@ export async function requireAuth(req: NextRequest, roles?: UserRole[]): Promise
   return ctx;
 }
 
-/** Merchant staff may only act on restaurants they are a member of; admins on all. */
-export async function requireRestaurantAccess(ctx: AuthContext, restaurantId: string): Promise<void> {
+export const StaffPermission = {
+  OPERATE: ["OWNER", "MANAGER", "KITCHEN", "CATALOG_EDITOR"],
+  EDIT_MENU: ["OWNER", "MANAGER", "CATALOG_EDITOR"],
+  MANAGE_OUTLET: ["OWNER", "MANAGER"],
+  OWNER_ONLY: ["OWNER"],
+} as const;
+
+/**
+ * Merchant staff may only act on restaurants they are a member of (and, for sensitive
+ * actions, only with a sufficient staff role); admins on all.
+ */
+export async function requireRestaurantAccess(
+  ctx: AuthContext,
+  restaurantId: string,
+  allowedStaffRoles: readonly string[] = StaffPermission.OPERATE
+): Promise<void> {
   if (ctx.role === UserRole.ADMIN) return;
   if (ctx.role !== UserRole.MERCHANT_STAFF) throw new DomainError("FORBIDDEN", "Restaurant staff access required.");
   const membership = await RestaurantRepository.getMembership(ctx.user.id, restaurantId);
   if (!membership) throw new DomainError("FORBIDDEN", "You are not a member of this restaurant.");
+  if (!allowedStaffRoles.includes(membership.staffRole)) {
+    throw new DomainError("FORBIDDEN", "Your staff role does not allow this action. Ask the outlet owner.");
+  }
 }
 
 export async function requireRiderProfile(ctx: AuthContext) {

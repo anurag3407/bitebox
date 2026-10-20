@@ -21,6 +21,7 @@ export const appUsers = pgTable("app_users", {
   phone: text("phone"),
   role: text("role").notNull().default("CUSTOMER"), // CUSTOMER, MERCHANT_STAFF, RIDER, ADMIN
   isActive: boolean("is_active").notNull().default(true),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -115,6 +116,9 @@ export const restaurants = pgTable("restaurants", {
   avgPrepMinutes: integer("avg_prep_minutes").notNull().default(15),
   commissionBp: integer("commission_bp").notNull().default(1500),
   isActive: boolean("is_active").notNull().default(true),
+  gstin: text("gstin"),
+  fssaiLicenseNumber: text("fssai_license_number"),
+  description: text("description"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -126,6 +130,7 @@ export const menuCategories = pgTable("menu_categories", {
   name: text("name").notNull(),
   displayOrder: integer("display_order").notNull().default(0),
   isActive: boolean("is_active").notNull().default(true),
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -142,6 +147,7 @@ export const menuItems = pgTable("menu_items", {
   imageUrl: text("image_url"),
   isBestseller: boolean("is_bestseller").notNull().default(false),
   displayOrder: integer("display_order").notNull().default(0),
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -352,6 +358,8 @@ export const riders = pgTable("riders", {
   currentLatitude: doublePrecision("current_latitude"),
   currentLongitude: doublePrecision("current_longitude"),
   headingDegrees: doublePrecision("heading_degrees"),
+  vehicleNumber: text("vehicle_number"),
+  drivingLicenseNumber: text("driving_license_number"),
   lastPingAt: timestamp("last_ping_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

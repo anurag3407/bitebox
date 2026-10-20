@@ -2,9 +2,11 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { MapPin, Navigation, Phone, Power, Store, Timer, Wallet } from "lucide-react";
+import { MapPin, Navigation, Power, Store, Timer, Wallet } from "lucide-react";
 import { DeliveryTripStatus } from "@startup/contracts";
 import { PortalHeader, RoleGate } from "@/components/portal/role-gate";
+import { CallButton } from "@/components/support/call-button";
+import { EarningsPanel } from "@/components/payouts/earnings-panel";
 import { Modal } from "@/components/ui/modal";
 import { Spinner } from "@/components/ui/misc";
 import { useToast } from "@/components/ui/toast";
@@ -190,11 +192,7 @@ function RiderApp() {
                 <div>
                   <p className="text-xs uppercase font-bold text-text-secondary">Pick up from</p>
                   <p className="text-lg font-black">{order.restaurant.name}</p>
-                  {order.restaurant.phone && (
-                    <a href={`tel:${order.restaurant.phone}`} className="text-xs font-bold text-brand inline-flex items-center gap-1 mt-1">
-                      <Phone className="w-3 h-3" /> Call restaurant
-                    </a>
-                  )}
+                  <CallButton orderId={order.orderId} target="RESTAURANT" label="Call restaurant" className="text-xs font-bold text-brand inline-flex items-center gap-1 mt-1" />
                 </div>
                 <ul className="text-sm bg-surface-muted rounded-xl p-3 space-y-1">
                   {order.items.map((i, idx) => (
@@ -250,11 +248,12 @@ function RiderApp() {
                   <a href={directionsUrl(order.deliveryAddress)} target="_blank" rel="noreferrer" className="flex-1 py-3 rounded-xl border border-border font-bold text-sm flex items-center justify-center gap-2">
                     <Navigation className="w-4 h-4" /> Navigate
                   </a>
-                  {order.deliveryAddress.contactPhone && (
-                    <a href={`tel:${order.deliveryAddress.contactPhone}`} className="flex-1 py-3 rounded-xl border border-border font-bold text-sm flex items-center justify-center gap-2">
-                      <Phone className="w-4 h-4" /> Call customer
-                    </a>
-                  )}
+                  <CallButton
+                    orderId={order.orderId}
+                    target="CUSTOMER"
+                    label="Call customer"
+                    className="flex-1 py-3 rounded-xl border border-border font-bold text-sm flex items-center justify-center gap-2"
+                  />
                 </div>
               </>
             )}
@@ -318,10 +317,39 @@ function RiderApp() {
   );
 }
 
+function RiderShell() {
+  const api = useApi();
+  const [tab, setTab] = useState<"trips" | "earnings">(
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("tab") === "earnings" ? "earnings" : "trips"
+  );
+  return (
+    <>
+      {tab === "trips" ? (
+        <RiderApp />
+      ) : (
+        <>
+          <PortalHeader title="Delivery partner" />
+          <div className="max-w-lg mx-auto px-4 py-4">
+            <EarningsPanel queryKey={["rider-earnings"]} load={() => api.getRiderEarnings()} saveAccount={(a) => api.saveRiderPayoutAccount(a)} />
+          </div>
+        </>
+      )}
+      <nav className="fixed bottom-0 inset-x-0 bg-white border-t border-border grid grid-cols-2 pb-[env(safe-area-inset-bottom)]" aria-label="Rider sections">
+        {(["trips", "earnings"] as const).map((t) => (
+          <button key={t} onClick={() => setTab(t)} className={`py-3 text-sm font-bold ${tab === t ? "text-brand" : "text-text-secondary"}`}>
+            {t === "trips" ? "Trips" : "Earnings"}
+          </button>
+        ))}
+      </nav>
+      <div className="h-16" />
+    </>
+  );
+}
+
 export default function RiderPage() {
   return (
     <RoleGate roles={["RIDER"]} title="Delivery partner app">
-      <RiderApp />
+      <RiderShell />
     </RoleGate>
   );
 }

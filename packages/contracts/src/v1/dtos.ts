@@ -260,6 +260,9 @@ export const QuoteBreakdownSchema = z.object({
   discountPaise: z.number().int().nonnegative(),
   // Absent on orders created before tipping existed
   tipPaise: z.number().int().nonnegative().optional(),
+  // GST split (food 5% vs services 18%) and the part of the discount applied to food; used for invoices
+  foodTaxPaise: z.number().int().nonnegative().optional(),
+  foodDiscountPaise: z.number().int().nonnegative().optional(),
   payablePaise: z.number().int().nonnegative(),
 });
 export type QuoteBreakdown = z.infer<typeof QuoteBreakdownSchema>;

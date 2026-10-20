@@ -6,3 +6,6 @@ export * from "./mapbox/mapbox-adapter.js";
 export * from "./fast2sms/fast2sms-adapter.js";
 export * from "./brevo/brevo-adapter.js";
 export * from "./webpush/webpush-adapter.js";
+export * from "./razorpayx/razorpayx-adapter.js";
+export * from "./exotel/exotel-adapter.js";
+export * from "./storage/storage-adapter.js";

@@ -221,6 +221,8 @@ function ProfileTab() {
         </button>
       </form>
 
+      <PrivacyControls />
+
       <div className="p-4 rounded-2xl border border-border flex items-center justify-between gap-3">
         <div>
           <p className="text-sm font-bold">Order notifications</p>
@@ -254,6 +256,83 @@ function ProfileTab() {
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+function PrivacyControls() {
+  const api = useApi();
+  const toast = useToast();
+  const router = useRouter();
+  const queryClient = useQueryClient();
+  const { signOut } = useAuth();
+  const [confirming, setConfirming] = useState(false);
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const download = async () => {
+    try {
+      const res = await fetch("/api/v1/me/export", { headers: await api.authHeaders() });
+      if (!res.ok) throw new Error("Could not prepare your data. Try again later.");
+      const url = URL.createObjectURL(await res.blob());
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `my-data-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast(errorMessage(err), "error");
+    }
+  };
+
+  return (
+    <div className="p-4 rounded-2xl border border-border space-y-3">
+      <p className="text-sm font-bold">Your data</p>
+      <p className="text-xs text-text-secondary">
+        Download a copy of your data, or permanently delete your account. Order invoices are kept for tax purposes without your personal details.{" "}
+        <Link href="/legal/privacy" className="underline">Privacy policy</Link>
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <button onClick={download} className="px-3 py-2 rounded-xl border border-border text-xs font-bold">
+          Download my data
+        </button>
+        <button onClick={() => setConfirming(true)} className="px-3 py-2 rounded-xl border border-red-200 text-red-700 text-xs font-bold">
+          Delete account
+        </button>
+      </div>
+      <Modal
+        open={confirming}
+        onClose={() => setConfirming(false)}
+        size="sm"
+        title="Delete your account?"
+        description="This cannot be undone. Saved addresses, favourites and your profile are erased."
+        footer={
+          <button
+            disabled={typed !== "DELETE" || busy}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await api.deleteAccount();
+                await signOut();
+                queryClient.clear();
+                router.push("/");
+              } catch (err) {
+                toast(errorMessage(err), "error");
+              } finally {
+                setBusy(false);
+              }
+            }}
+            className="w-full py-2.5 rounded-xl bg-red-600 text-white text-sm font-bold disabled:opacity-40"
+          >
+            Permanently delete
+          </button>
+        }
+      >
+        <label className="text-xs font-semibold text-text-secondary">
+          Type DELETE to confirm
+          <input value={typed} onChange={(e) => setTyped(e.target.value)} className="mt-1 w-full p-2.5 rounded-xl border border-border text-sm" />
+        </label>
+      </Modal>
     </div>
   );
 }

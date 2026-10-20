@@ -31,7 +31,7 @@ export function shapeOrderForViewer(order: OrderDetailDto, viewer: OrderViewer):
     case "CUSTOMER": {
       // The pickup code is the restaurant's proof of handover
       const { pickupCode: _p, customerId: _c, ...rest } = order;
-      return rest;
+      return { ...rest, rider: rest.rider ? { ...rest.rider, phone: undefined } : undefined };
     }
     case "MERCHANT": {
       const { deliveryOtp: _d, customerId: _c, ...rest } = order;
@@ -39,8 +39,12 @@ export function shapeOrderForViewer(order: OrderDetailDto, viewer: OrderViewer):
     }
     case "RIDER": {
       const { deliveryOtp: _d, pickupCode: _p, customerId: _c, breakdown, ...rest } = order;
-      // Riders see what to collect/deliver, not the customer's bill
-      return { ...rest, breakdown: { ...breakdown, discountPaise: 0 } };
+      // Riders see what to collect/deliver, not the customer's bill or number (calls are bridged)
+      return {
+        ...rest,
+        breakdown: { ...breakdown, discountPaise: 0 },
+        deliveryAddress: { ...rest.deliveryAddress, contactPhone: undefined },
+      };
     }
   }
 }

@@ -228,6 +228,11 @@ export class RefundRepository {
         await RefundRepository.refreshOrderRefundTotalsWithClient(client, refund.order_id);
       }
 
+      if (input.status === "PROCESSED") {
+        // Invoiced orders need a GST credit note for the refunded value
+        await JobRepository.enqueueWithClient(client, JobKind.ISSUE_CREDIT_NOTE, { refundId: refund.id }, { dedupeKey: `credit-note:${refund.id}` });
+      }
+
       await OutboxRepository.appendWithClient(client, `refund.${input.status.toLowerCase()}`, refund.order_id, 0, {
         orderId: refund.order_id,
         refundId: refund.id,

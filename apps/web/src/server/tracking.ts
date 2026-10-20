@@ -48,8 +48,8 @@ export async function buildTrackingSnapshot(orderId: string, viewer: OrderViewer
       const updatedAt = live?.updatedAt ?? riderRow.lastPingAt?.toISOString();
       rider = {
         name: riderRow.name,
-        // Customers reach the rider through the app; the merchant does not get the number
-        phone: viewer === "CUSTOMER" || viewer === "ADMIN" ? riderRow.phone : undefined,
+        // Numbers are never sent to other parties; calls are placed via /orders/:id/call
+        phone: viewer === "ADMIN" ? riderRow.phone : undefined,
         vehicleType: riderRow.vehicleType,
         location,
         headingDegrees: live?.headingDegrees ?? riderRow.headingDegrees ?? undefined,

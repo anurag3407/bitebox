@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { MapPin, Search, ShoppingCart, User, ChevronDown, Store, Bike, ShieldAlert, LogOut, Receipt } from "lucide-react";
+import { MapPin, Search, ShoppingCart, User, ChevronDown, Store, Bike, ShieldAlert, LogOut, Receipt, HelpCircle } from "lucide-react";
 import { useCartStore } from "@/features/cart/cart-store";
 import { useLocationStore } from "@/features/location/location-store";
 import { useAuth } from "@/features/auth/auth-context";
@@ -104,6 +104,9 @@ export function Header() {
                   </Link>
                   <Link role="menuitem" href="/account?tab=orders" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm hover:bg-surface-muted">
                     <Receipt className="w-4 h-4" /> Your orders
+                  </Link>
+                  <Link role="menuitem" href="/support" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm hover:bg-surface-muted">
+                    <HelpCircle className="w-4 h-4" /> Help & support
                   </Link>
                   {portals.map((p) => (
                     <Link role="menuitem" key={p.href} href={p.href} onClick={() => setMenuOpen(false)} className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm hover:bg-surface-muted font-semibold text-brand">

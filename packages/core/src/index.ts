@@ -11,3 +11,6 @@ export * from "./modules/payments/payment-state-machine.js";
 export * from "./modules/dispatch/dispatch-engine.js";
 export * from "./modules/eta/eta-calculator.js";
 export * from "./modules/accounting/ledger-model.js";
+export * from "./shared/crypto.js";
+export * from "./modules/payouts/settlement.js";
+export * from "./modules/tax/gst.js";

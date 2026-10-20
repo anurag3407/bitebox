@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import {
   Coordinate,
   DietaryTag,
@@ -109,6 +109,9 @@ function mapRawRestaurant(row: any): RestaurantRow {
     avgPrepMinutes: row.avg_prep_minutes,
     commissionBp: row.commission_bp,
     isActive: row.is_active,
+    gstin: row.gstin,
+    fssaiLicenseNumber: row.fssai_license_number,
+    description: row.description,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -212,14 +215,16 @@ export class RestaurantRepository {
     const categories = await db
       .select()
       .from(menuCategories)
-      .where(and(eq(menuCategories.restaurantId, restaurant.id), eq(menuCategories.isActive, true)))
+      .where(
+        and(eq(menuCategories.restaurantId, restaurant.id), eq(menuCategories.isActive, true), isNull(menuCategories.archivedAt))
+      )
       .orderBy(menuCategories.displayOrder);
 
     // Fetch items
     const items = await db
       .select()
       .from(menuItems)
-      .where(eq(menuItems.restaurantId, restaurant.id))
+      .where(and(eq(menuItems.restaurantId, restaurant.id), isNull(menuItems.archivedAt)))
       .orderBy(asc(menuItems.displayOrder), asc(menuItems.name));
 
     const itemIds = items.map((i) => i.id);
@@ -356,7 +361,7 @@ export class RestaurantRepository {
     const res = await getDbPool().query(
       `UPDATE menu_items mi SET is_available = $3, updated_at = NOW()
          FROM restaurants r
-        WHERE mi.id = $2 AND mi.restaurant_id = $1 AND r.id = mi.restaurant_id
+        WHERE mi.id = $2 AND mi.restaurant_id = $1 AND r.id = mi.restaurant_id AND mi.archived_at IS NULL
         RETURNING r.slug`,
       [restaurantId, itemId, isAvailable]
     );

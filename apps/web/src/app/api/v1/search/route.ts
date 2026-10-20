@@ -45,7 +45,7 @@ export const GET = route(async (req, _ctx, requestId) => {
       `SELECT mi.id, mi.name, mi.description, mi.price_paise, mi.dietary_tag, mi.stock_policy, mi.is_available,
               mi.image_url, mi.is_bestseller, mi.restaurant_id
          FROM menu_items mi JOIN restaurants r ON r.id = mi.restaurant_id
-        WHERE r.is_active AND mi.name ILIKE $1
+        WHERE r.is_active AND mi.archived_at IS NULL AND mi.name ILIKE $1
           AND (NOT $2 OR mi.dietary_tag IN ('VEG', 'VEGAN'))
           ${deliverable}
         ORDER BY mi.is_available DESC, mi.is_bestseller DESC, r.rating DESC

@@ -5,8 +5,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, ChefHat, Clock, KeyRound, Package, Volume2, VolumeX, X } from "lucide-react";
 import { OrderDetailDto } from "@startup/contracts";
 import { PortalHeader, RoleGate } from "@/components/portal/role-gate";
+import { MenuEditor } from "@/components/merchant/menu-editor";
+import { OutletSettings } from "@/components/merchant/outlet-settings";
+import { EarningsPanel } from "@/components/payouts/earnings-panel";
+import { useSearchParams } from "next/navigation";
 import { Modal } from "@/components/ui/modal";
-import { EmptyState, Spinner, VegMark } from "@/components/ui/misc";
+import { EmptyState, Spinner } from "@/components/ui/misc";
 import { useToast } from "@/components/ui/toast";
 import { errorMessage, useApi } from "@/lib/api";
 import { playChime, unlockAudio } from "@/lib/alert-sound";
@@ -143,54 +147,23 @@ function OrderCard({ order, restaurantId }: { order: OrderDetailDto; restaurantI
   );
 }
 
-function MenuAvailability({ restaurantSlug, restaurantId }: { restaurantSlug: string; restaurantId: string }) {
-  const api = useApi();
-  const toast = useToast();
-  const menu = useQuery({ queryKey: ["restaurant", restaurantSlug], queryFn: () => api.getRestaurantBySlug(restaurantSlug) });
-  if (!menu.data) return <Spinner />;
-  return (
-    <div className="space-y-6">
-      {menu.data.categories.map((cat) => (
-        <section key={cat.id}>
-          <h3 className="font-bold mb-2">{cat.name}</h3>
-          <ul className="divide-y divide-border rounded-2xl border border-border bg-white">
-            {cat.items.map((item) => (
-              <li key={item.id} className="p-3 flex items-center justify-between gap-3">
-                <span className="flex items-center gap-2 text-sm">
-                  <VegMark tag={item.dietaryTag} /> {item.name}
-                </span>
-                <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer">
-                  {item.isAvailable ? "In stock" : "Sold out"}
-                  <input
-                    type="checkbox"
-                    role="switch"
-                    checked={item.isAvailable}
-                    onChange={async (e) => {
-                      try {
-                        await api.merchantSetItemAvailability(restaurantId, item.id, e.target.checked);
-                        menu.refetch();
-                      } catch (err) {
-                        toast(errorMessage(err), "error");
-                      }
-                    }}
-                    className="w-5 h-5 accent-[#24963F]"
-                  />
-                </label>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ))}
-    </div>
-  );
-}
+type Tab = "live" | "menu" | "outlet" | "earnings" | "history";
+const ALL_STAFF = ["OWNER", "MANAGER", "KITCHEN", "CATALOG_EDITOR"];
+const TABS: Array<{ id: Tab; label: string; roles: string[] }> = [
+  { id: "live", label: "Live orders", roles: ALL_STAFF },
+  { id: "menu", label: "Menu", roles: ALL_STAFF },
+  { id: "outlet", label: "Outlet & staff", roles: ["OWNER", "MANAGER"] },
+  { id: "earnings", label: "Earnings", roles: ["OWNER"] },
+  { id: "history", label: "History", roles: ALL_STAFF },
+];
 
 function MerchantConsole() {
   const api = useApi();
   const toast = useToast();
   const restaurants = useQuery({ queryKey: ["merchant-restaurants"], queryFn: () => api.getMerchantRestaurants() });
   const [restaurantId, setRestaurantId] = useState<string | null>(null);
-  const [tab, setTab] = useState<"live" | "menu" | "history">("live");
+  const params = useSearchParams();
+  const [tab, setTab] = useState<Tab>((TABS.find((t) => t.id === params.get("tab"))?.id ?? "live") as Tab);
   const [sound, setSound] = useState(false);
   const seen = useRef<Set<string>>(new Set());
 
@@ -202,7 +175,7 @@ function MerchantConsole() {
   const orders = useQuery({
     queryKey: ["merchant-orders", restaurantId, tab],
     queryFn: () => api.getMerchantOrders(restaurantId!, tab === "history" ? "all" : "active"),
-    enabled: !!restaurantId && tab !== "menu",
+    enabled: !!restaurantId && (tab === "live" || tab === "history"),
     refetchInterval: 5000,
     refetchIntervalInBackground: true,
   });
@@ -278,10 +251,10 @@ function MerchantConsole() {
           )}
         </div>
 
-        <nav className="flex gap-2">
-          {(["live", "menu", "history"] as const).map((t) => (
-            <button key={t} onClick={() => setTab(t)} className={`px-4 py-2 rounded-full text-sm font-bold border ${tab === t ? "bg-brand text-white border-brand" : "border-border"}`}>
-              {t === "live" ? "Live orders" : t === "menu" ? "Menu stock" : "History"}
+        <nav className="flex gap-2 overflow-x-auto">
+          {TABS.filter((t) => restaurant && t.roles.includes(restaurant.staffRole)).map((t) => (
+            <button key={t.id} onClick={() => setTab(t.id)} className={`shrink-0 px-4 py-2 rounded-full text-sm font-bold border ${tab === t.id ? "bg-brand text-white border-brand" : "border-border"}`}>
+              {t.label}
             </button>
           ))}
         </nav>
@@ -307,7 +280,15 @@ function MerchantConsole() {
             ))}
           </div>
         )}
-        {tab === "menu" && restaurant && <MenuAvailability restaurantId={restaurant.id} restaurantSlug={restaurant.slug} />}
+        {tab === "menu" && restaurant && <MenuEditor restaurantId={restaurant.id} canEdit={["OWNER", "MANAGER", "CATALOG_EDITOR"].includes(restaurant.staffRole)} />}
+        {tab === "outlet" && restaurant && <OutletSettings key={restaurant.id} restaurantId={restaurant.id} isOwner={restaurant.staffRole === "OWNER"} />}
+        {tab === "earnings" && restaurant && (
+          <EarningsPanel
+            queryKey={["merchant-earnings", restaurant.id]}
+            load={() => api.getMerchantEarnings(restaurant.id)}
+            saveAccount={(account) => api.saveMerchantPayoutAccount(restaurant.id, account)}
+          />
+        )}
         {tab === "history" && (
           <ul className="divide-y divide-border rounded-2xl border border-border bg-white">
             {(orders.data ?? []).map((o) => (
@@ -337,7 +318,9 @@ function MerchantConsole() {
 export default function MerchantPage() {
   return (
     <RoleGate roles={["MERCHANT_STAFF"]} title="Restaurant console">
-      <MerchantConsole />
+      <React.Suspense>
+        <MerchantConsole />
+      </React.Suspense>
     </RoleGate>
   );
 }

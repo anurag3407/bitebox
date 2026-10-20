@@ -54,6 +54,7 @@ export class UserRepository {
       phone: r.phone,
       role: r.role,
       isActive: r.is_active,
+      deletedAt: r.deleted_at,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     };

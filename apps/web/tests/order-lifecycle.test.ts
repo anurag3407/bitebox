@@ -24,7 +24,13 @@ import { POST as riderLocation } from "../src/app/api/v1/rider/location/route.js
 /** Runs due jobs (pulling this order's scheduled dispatch forward) and publishes the outbox. */
 async function drainWorker(worker: WorkerRunner, orderId?: string) {
   if (orderId) {
-    // Other suites leave dispatch work behind; only this order's dispatch should compete for our rider
+    // Other suites leave dispatchable orders behind (the maintenance sweep would re-dispatch them);
+    // only this order should compete for our rider
+    await getDbPool().query(
+      `UPDATE orders SET fulfillment_state = 'CANCELLED' WHERE id <> $1 AND fulfillment_state IN ('ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP')`,
+      [orderId]
+    );
+    await getDbPool().query(`UPDATE delivery_offers SET status = 'EXPIRED' WHERE order_id <> $1 AND status = 'OFFERED'`, [orderId]);
     await getDbPool().query(
       `UPDATE jobs SET status = 'COMPLETED' WHERE status = 'PENDING' AND kind = 'DISPATCH_ORDER' AND payload_json->>'orderId' <> $1`,
       [orderId]
