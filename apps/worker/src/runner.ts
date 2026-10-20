@@ -1,134 +1,111 @@
-import { FulfillmentState } from "@startup/contracts";
-import {
-  ClaimedJob,
-  JobRepository,
-  LedgerRepository,
-  OrderRepository,
-  getDb,
-  orders,
-  refunds,
-} from "@startup/database";
-import { LedgerEngine } from "@startup/core";
-import { BrevoEmailAdapter, Fast2SmsAdapter } from "@startup/integrations";
-import { eq } from "drizzle-orm";
+import { ClaimedJob, JobKind, JobRepository, OutboxRepository } from "@startup/database";
+import { JOB_HANDLERS } from "./handlers.js";
+import { logger } from "./logger.js";
+import { NotificationService } from "./notifications.js";
+
+const MAINTENANCE_INTERVAL_MS = 60_000;
+const JOB_CONCURRENCY = 5;
 
 export class WorkerRunner {
   private workerId: string;
   private isRunning = false;
-  private timer: NodeJS.Timeout | null = null;
-  private smsAdapter = new Fast2SmsAdapter();
-  private emailAdapter = new BrevoEmailAdapter();
+  private timers: NodeJS.Timeout[] = [];
+  private inflight = new Set<Promise<unknown>>();
+  readonly notifications: NotificationService;
 
-  constructor(workerId: string = `worker_${process.pid}_${Date.now()}`) {
+  constructor(workerId: string = `worker_${process.pid}_${Date.now()}`, notifications = new NotificationService()) {
     this.workerId = workerId;
+    this.notifications = notifications;
+  }
+
+  private async runJob(job: ClaimedJob): Promise<void> {
+    const handler = JOB_HANDLERS[job.kind];
+    try {
+      if (!handler) {
+        logger.warn("unknown job kind", { jobId: job.id, kind: job.kind });
+      } else {
+        await handler(job);
+      }
+      await JobRepository.completeJob(job.id, this.workerId);
+    } catch (err) {
+      const message = (err as Error)?.message || "Unknown error";
+      const outcome = await JobRepository.failJob(job.id, this.workerId, message);
+      logger[outcome === "FAILED" ? "error" : "warn"]("job failed", {
+        jobId: job.id,
+        kind: job.kind,
+        attempt: job.attemptCount,
+        outcome,
+        error: message,
+      });
+    }
   }
 
   /**
    * Executes a single pass of job claiming and execution. Useful for testing and cron.
    */
   async runOnce(): Promise<number> {
-    const jobs = await JobRepository.claimRunnableJobs(this.workerId, 10, 30);
-    for (const job of jobs) {
-      try {
-        await this.processJob(job);
-        await JobRepository.completeJob(job.id, this.workerId);
-      } catch (err: any) {
-        console.error(`Worker job ${job.id} (${job.kind}) failed:`, err);
-        await JobRepository.failJob(job.id, this.workerId, err.message || "Unknown error");
-      }
+    const jobs = await JobRepository.claimRunnableJobs(this.workerId, 20, 60);
+    for (let i = 0; i < jobs.length; i += JOB_CONCURRENCY) {
+      await Promise.all(jobs.slice(i, i + JOB_CONCURRENCY).map((job) => this.runJob(job)));
     }
     return jobs.length;
   }
 
-  private async processJob(job: ClaimedJob): Promise<void> {
-    switch (job.kind) {
-      case "MERCHANT_ACCEPTANCE_TIMEOUT": {
-        const orderId = job.payload.orderId as string;
-        if (!orderId) throw new Error("Missing orderId in job payload");
-
-        const order = await OrderRepository.findById(orderId);
-        if (!order) return;
-
-        // If order is still awaiting merchant acceptance after deadline
-        if (order.fulfillmentState === FulfillmentState.AWAITING_MERCHANT) {
-          console.log(`[Worker] Expiring merchant acceptance for order ${order.orderNumber}`);
-
-          await OrderRepository.updateFulfillmentState({
-            orderId,
-            fromState: FulfillmentState.AWAITING_MERCHANT,
-            toState: FulfillmentState.CANCELLED,
-            actorType: "SYSTEM",
-            reason: "Merchant response deadline of 90 seconds expired",
-          });
-
-          // Initiate refund record
-          const db = getDb();
-          await db.insert(refunds).values({
-            orderId,
-            amountPaise: order.breakdown.payablePaise,
-            reason: "Auto-refund: Merchant did not accept in time",
-            status: "APPROVED",
-          });
-
-          // Post balanced double-entry ledger refund transaction
-          const refundEntries = LedgerEngine.buildRefundEntries(
-            order.breakdown.payablePaise,
-            "Auto-refund: Merchant did not accept in time"
-          );
-          await LedgerRepository.postTransaction({
-            orderId,
-            effectType: "REFUND",
-            entries: refundEntries,
-          });
-
-          // Send notifications using customer contact phone
-          const customerPhone = order.deliveryAddress?.contactPhone || "+919876543210";
-
-          await this.smsAdapter.sendSms({
-            phone: customerPhone,
-            message: `Your order ${order.orderNumber} was auto-cancelled because the restaurant was unable to accept it in time. A full refund of ₹${order.breakdown.payablePaise / 100} has been initiated.`,
-          });
-        }
-        break;
+  /** Publishes pending outbox events to notification channels. */
+  async publishOutboxOnce(): Promise<number> {
+    const events = await OutboxRepository.claimBatch(50);
+    for (const event of events) {
+      try {
+        await this.notifications.handle(event);
+        await OutboxRepository.markProcessed(event.id);
+      } catch (err) {
+        await OutboxRepository.markFailed(event.id, (err as Error)?.message ?? String(err));
+        logger.warn("outbox publish failed", { eventId: event.id, type: event.eventType, error: (err as Error)?.message });
       }
-
-      case "DISPATCH_OFFER_TIMEOUT": {
-        console.log(`[Worker] Handling dispatch offer timeout`, job.payload);
-        break;
-      }
-
-      default:
-        console.log(`[Worker] Unknown or unhandled job kind: ${job.kind}`);
-        break;
     }
+    return events.length;
   }
 
-  start(intervalMs: number = 2000): void {
+  async scheduleMaintenance(): Promise<void> {
+    const bucket = Math.floor(Date.now() / MAINTENANCE_INTERVAL_MS);
+    await JobRepository.enqueue(JobKind.MAINTENANCE, {}, { dedupeKey: `maintenance:${bucket}`, maxAttempts: 1 });
+  }
+
+  private loop(name: string, intervalMs: number, fn: () => Promise<number | void>): void {
+    const tick = async () => {
+      if (!this.isRunning) return;
+      const run = fn()
+        .then((count) => {
+          // Drain quickly while there is a backlog
+          return typeof count === "number" && count > 0 ? 50 : intervalMs;
+        })
+        .catch((err) => {
+          logger.error(`${name} loop error`, { error: (err as Error)?.message });
+          return intervalMs * 2;
+        });
+      this.inflight.add(run);
+      const delay = await run;
+      this.inflight.delete(run);
+      if (this.isRunning) this.timers.push(setTimeout(tick, delay));
+    };
+    void tick();
+  }
+
+  start(intervalMs: number = 1000): void {
     if (this.isRunning) return;
     this.isRunning = true;
-    console.log(`Worker started with ID: ${this.workerId}`);
-
-    const loop = async () => {
-      if (!this.isRunning) return;
-      try {
-        await this.runOnce();
-      } catch (err) {
-        console.error("Worker loop tick error:", err);
-      }
-      if (this.isRunning) {
-        this.timer = setTimeout(loop, intervalMs);
-      }
-    };
-
-    loop();
+    logger.info("worker started", { workerId: this.workerId });
+    this.loop("jobs", intervalMs, () => this.runOnce());
+    this.loop("outbox", intervalMs, () => this.publishOutboxOnce());
+    this.loop("scheduler", MAINTENANCE_INTERVAL_MS, () => this.scheduleMaintenance());
   }
 
-  stop(): void {
+  /** Stops claiming new work and waits (bounded) for in-flight work to finish. */
+  async stop(timeoutMs = 25_000): Promise<void> {
     this.isRunning = false;
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
-    }
-    console.log(`Worker stopped: ${this.workerId}`);
+    for (const t of this.timers) clearTimeout(t);
+    this.timers = [];
+    await Promise.race([Promise.allSettled([...this.inflight]), new Promise((r) => setTimeout(r, timeoutMs))]);
+    logger.info("worker stopped", { workerId: this.workerId });
   }
 }

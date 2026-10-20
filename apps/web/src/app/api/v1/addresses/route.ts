@@ -1,41 +1,18 @@
-import { NextRequest } from "next/server";
 import { CreateAddressRequestSchema } from "@startup/contracts";
 import { AddressRepository } from "@startup/database";
-import { apiError, apiSuccess } from "@/server/api-response";
-import { getAuthenticatedActor, getOrCreateDbUser } from "@/server/auth-guard";
+import { apiSuccess } from "@/server/api-response";
+import { requireAuth } from "@/server/auth-guard";
+import { enforceRateLimit } from "@/server/rate-limit";
+import { parseBody, route } from "@/server/route";
 
-export async function GET(req: NextRequest) {
-  try {
-    const actor = await getAuthenticatedActor(req);
-    if (!actor) {
-      return apiError("UNAUTHENTICATED", "Authentication required", 401);
-    }
+export const GET = route(async (req, _ctx, requestId) => {
+  const { user } = await requireAuth(req);
+  return apiSuccess(await AddressRepository.listByUser(user.id), 200, { requestId });
+});
 
-    const user = await getOrCreateDbUser(actor);
-    const addresses = await AddressRepository.listByUser(user.id);
-    return apiSuccess(addresses);
-  } catch (err: any) {
-    return apiError("INTERNAL_ERROR", err.message || "Failed to fetch addresses", 500);
-  }
-}
-
-export async function POST(req: NextRequest) {
-  try {
-    const actor = await getAuthenticatedActor(req);
-    if (!actor) {
-      return apiError("UNAUTHENTICATED", "Authentication required", 401);
-    }
-
-    const body = await req.json();
-    const parsed = CreateAddressRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      return apiError("VALIDATION_ERROR", "Invalid address details", 400, parsed.error.format());
-    }
-
-    const user = await getOrCreateDbUser(actor);
-    const created = await AddressRepository.create(user.id, parsed.data);
-    return apiSuccess(created, 201);
-  } catch (err: any) {
-    return apiError("INTERNAL_ERROR", err.message || "Failed to create address", 500);
-  }
-}
+export const POST = route(async (req, _ctx, requestId) => {
+  const { user } = await requireAuth(req);
+  await enforceRateLimit(req, "mutation", user.id);
+  const body = await parseBody(req, CreateAddressRequestSchema);
+  return apiSuccess(await AddressRepository.create(user.id, body), 201, { requestId });
+});

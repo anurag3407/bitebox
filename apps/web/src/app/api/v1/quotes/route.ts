@@ -1,197 +1,214 @@
-import { NextRequest } from "next/server";
-import { CreateQuoteRequestSchema, QuoteLineBreakdown } from "@startup/contracts";
+import { CreateQuoteRequestSchema, MenuItemDto, QuoteLineBreakdown, QuoteResponse } from "@startup/contracts";
 import {
+  CouponDiscountRule,
+  DomainError,
+  EtaCalculator,
   ModifierValidator,
   PricingCalculator,
   ServiceabilityPolicy,
 } from "@startup/core";
 import {
   AddressRepository,
+  CouponRepository,
   RestaurantRepository,
-  coupons,
+  evaluateAvailability,
   getDb,
+  getDbPool,
   quotes,
+  serviceZones,
 } from "@startup/database";
-import { apiError, apiSuccess } from "@/server/api-response";
-import { getAuthenticatedActor, getOrCreateDbUser } from "@/server/auth-guard";
+import { MapboxAdapter } from "@startup/integrations";
 import { eq } from "drizzle-orm";
+import { apiSuccess } from "@/server/api-response";
+import { requireAuth } from "@/server/auth-guard";
+import { CacheKeys, cached } from "@/server/cache";
+import { enforceRateLimit } from "@/server/rate-limit";
+import { parseBody, route } from "@/server/route";
 
-export async function POST(req: NextRequest) {
-  try {
-    const actor = await getAuthenticatedActor(req);
-    if (!actor) {
-      return apiError("UNAUTHENTICATED", "Authentication required to generate quote", 401);
-    }
+const QUOTE_TTL_MINUTES = 10;
 
-    const body = await req.json();
-    const parsed = CreateQuoteRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      return apiError("VALIDATION_ERROR", "Invalid quote request", 400, parsed.error.format());
-    }
+export const POST = route(async (req, _ctx, requestId) => {
+  const auth = await requireAuth(req);
+  await enforceRateLimit(req, "quote", auth.user.id);
+  const { restaurantId, deliveryAddressId, destinationLocation, items, couponCode, tipPaise } = await parseBody(
+    req,
+    CreateQuoteRequestSchema
+  );
 
-    const { restaurantId, deliveryAddressId, destinationLocation, items, couponCode } =
-      parsed.data;
-
-    // 1. Fetch Restaurant & Menu
-    const restaurant = await RestaurantRepository.findById(restaurantId);
-    if (!restaurant) {
-      return apiError("NOT_FOUND", "Restaurant not found", 404);
-    }
-    if (!restaurant.isAcceptingOrders || !restaurant.isOpen) {
-      return apiError(
-        "SERVICEABILITY_ERROR",
-        "Restaurant is currently not accepting orders",
-        422
-      );
-    }
-
-    // 2. Fetch destination location
-    let customerLocation = destinationLocation;
-    if (deliveryAddressId) {
-      const address = await AddressRepository.findById(deliveryAddressId);
-      if (address) {
-        customerLocation = {
-          latitude: address.latitude,
-          longitude: address.longitude,
-        };
-      }
-    }
-    if (!customerLocation) {
-      customerLocation = { latitude: 28.6315, longitude: 77.2167 }; // Default fallback to Central Delhi
-    }
-
-    // 3. Distance check
-    const restaurantLocation = {
-      latitude: restaurant.latitude,
-      longitude: restaurant.longitude,
-    };
-    const distanceMeters = ServiceabilityPolicy.calculateDistanceMeters(
-      restaurantLocation,
-      customerLocation
+  // 1. Restaurant must exist and be taking orders right now
+  const restaurant = await RestaurantRepository.findById(restaurantId);
+  if (!restaurant || !restaurant.isActive) throw new DomainError("NOT_FOUND", "Restaurant not found");
+  const availability = evaluateAvailability(restaurant);
+  if (!availability.isOpenNow) {
+    throw new DomainError(
+      "SERVICEABILITY_ERROR",
+      availability.nextOpenText ? `This restaurant is closed. ${availability.nextOpenText}.` : "This restaurant is closed right now."
     );
+  }
+  if (!availability.isAcceptingOrders) {
+    throw new DomainError("SERVICEABILITY_ERROR", "This restaurant is not accepting orders at the moment.");
+  }
 
-    // 4. Validate items & modifiers
-    const detail = await RestaurantRepository.findBySlug(restaurant.slug);
-    if (!detail) {
-      return apiError("NOT_FOUND", "Restaurant menu not found", 404);
+  // 2. Destination: a saved address of this user, or raw coordinates for a preview
+  let destination = destinationLocation;
+  if (deliveryAddressId) {
+    const address = await AddressRepository.findById(deliveryAddressId);
+    if (!address || address.userId !== auth.user.id || address.isDeleted) {
+      throw new DomainError("NOT_FOUND", "Delivery address not found");
     }
+    destination = { latitude: address.latitude, longitude: address.longitude };
+  }
+  if (!destination) throw new DomainError("VALIDATION_ERROR", "A delivery location is required");
 
-    const itemMap = new Map();
-    for (const cat of detail.categories) {
-      for (const item of cat.items) {
-        itemMap.set(item.id, item);
-      }
+  // 3. Serviceability: inside an operating zone and within this outlet's radius
+  const zones = await getDb().select().from(serviceZones).where(eq(serviceZones.isActive, true));
+  const inZone = zones.some((z) =>
+    ServiceabilityPolicy.isPointInPolygon(destination!, (z.polygonGeojson as Array<{ latitude: number; longitude: number }>) ?? [])
+  );
+  if (!inZone) throw new DomainError("SERVICEABILITY_ERROR", "We don't deliver to this location yet.");
+
+  const restaurantLocation = { latitude: restaurant.latitude, longitude: restaurant.longitude };
+  const radiusCheck = ServiceabilityPolicy.isRestaurantServiceable(
+    restaurantLocation,
+    destination,
+    restaurant.maxDeliveryRadiusMeters
+  );
+  if (!radiusCheck.isServiceable) {
+    throw new DomainError("SERVICEABILITY_ERROR", "This restaurant does not deliver to your location.", {
+      details: { distanceMeters: radiusCheck.distanceMeters },
+    });
+  }
+
+  // 4. Authoritative menu: prices, availability, variants and modifiers come from the server
+  const detail = await cached(CacheKeys.menu(restaurant.slug), 30, () => RestaurantRepository.findBySlug(restaurant.slug));
+  if (!detail) throw new DomainError("NOT_FOUND", "Restaurant menu not found");
+
+  const itemMap = new Map<string, MenuItemDto>();
+  for (const cat of detail.categories) for (const item of cat.items) itemMap.set(item.id, item);
+
+  const quoteLines: QuoteLineBreakdown[] = [];
+  for (const line of items) {
+    const menuItem = itemMap.get(line.menuItemId);
+    if (!menuItem) {
+      throw new DomainError("OUT_OF_STOCK", "An item in your cart is no longer on the menu.", {
+        details: { menuItemId: line.menuItemId },
+      });
     }
-
-    const quoteLines: QuoteLineBreakdown[] = [];
-    for (const line of items) {
-      const menuItem = itemMap.get(line.menuItemId);
-      if (!menuItem) {
-        return apiError("NOT_FOUND", `Item ${line.menuItemId} does not belong to this restaurant`, 422);
-      }
-      if (!menuItem.isAvailable) {
-        return apiError("OUT_OF_STOCK", `Item "${menuItem.name}" is currently unavailable`, 422);
-      }
-
-      let basePrice = menuItem.pricePaise;
-      let variantName: string | undefined;
-
-      if (line.variantId) {
-        const variant = menuItem.variants.find((v: any) => v.id === line.variantId);
-        if (!variant || !variant.isAvailable) {
-          return apiError("OUT_OF_STOCK", `Selected variant for "${menuItem.name}" is unavailable`, 422);
-        }
-        basePrice = variant.pricePaise;
-        variantName = variant.name;
-      }
-
-      const modResult = ModifierValidator.validate(
-        menuItem.modifierGroups,
-        line.selectedOptionIds
-      );
-      if (!modResult.isValid) {
-        return apiError("VALIDATION_ERROR", modResult.error || "Invalid modifiers", 422);
-      }
-
-      const lineTotal = (basePrice + modResult.optionsTotalPaise) * line.quantity;
-
-      quoteLines.push({
-        menuItemId: menuItem.id,
-        name: menuItem.name,
-        variantName,
-        selectedOptionNames: modResult.selectedOptionNames,
-        quantity: line.quantity,
-        basePricePaise: basePrice,
-        optionsPricePaise: modResult.optionsTotalPaise,
-        lineTotalPaise: lineTotal,
-        instructions: line.instructions,
+    if (!menuItem.isAvailable) {
+      throw new DomainError("OUT_OF_STOCK", `"${menuItem.name}" is currently unavailable.`, {
+        details: { menuItemId: menuItem.id },
       });
     }
 
-    // 5. Coupon validation
-    let couponDiscountRule: any = undefined;
-    if (couponCode) {
-      const db = getDb();
-      const [coupon] = await db
-        .select()
-        .from(coupons)
-        .where(eq(coupons.code, couponCode.toUpperCase()))
-        .limit(1);
+    const variantResult = ModifierValidator.resolveVariant(menuItem.name, menuItem.variants, line.variantId);
+    if (!variantResult.ok) {
+      throw new DomainError("OUT_OF_STOCK", variantResult.error, { details: { menuItemId: menuItem.id } });
+    }
+    const basePrice = variantResult.variant?.pricePaise ?? menuItem.pricePaise;
 
-      if (coupon && coupon.isActive) {
-        couponDiscountRule = {
-          type: coupon.type,
-          discountValue: coupon.discountValue,
-          maxDiscountPaise: coupon.maxDiscountPaise ?? undefined,
-          minOrderPaise: coupon.minOrderPaise,
-        };
+    const modResult = ModifierValidator.validate(menuItem.modifierGroups, line.selectedOptionIds);
+    if (!modResult.isValid) {
+      throw new DomainError("VALIDATION_ERROR", modResult.error || "Invalid customisation", {
+        details: { menuItemId: menuItem.id },
+      });
+    }
+
+    quoteLines.push({
+      menuItemId: menuItem.id,
+      name: menuItem.name,
+      variantName: variantResult.variant?.name,
+      selectedOptionNames: modResult.selectedOptionNames,
+      quantity: line.quantity,
+      basePricePaise: basePrice,
+      optionsPricePaise: modResult.optionsTotalPaise,
+      lineTotalPaise: (basePrice + modResult.optionsTotalPaise) * line.quantity,
+      instructions: line.instructions,
+    });
+  }
+
+  // 5. Road distance drives the delivery fee and ETA (falls back to an estimate if Mapbox is down)
+  const roadRoute = await new MapboxAdapter().calculateRoute(restaurantLocation, destination);
+
+  const subtotal = PricingCalculator.calculateSubtotal(quoteLines);
+  if (subtotal > PricingCalculator.MAX_ORDER_SUBTOTAL_PAISE) {
+    throw new DomainError(
+      "VALIDATION_ERROR",
+      `Orders above ₹${PricingCalculator.MAX_ORDER_SUBTOTAL_PAISE / 100} need to be placed with support.`
+    );
+  }
+
+  // 6. Coupon: an invalid code never blocks the quote, it is reported back instead
+  let couponRule: CouponDiscountRule | undefined;
+  let couponError: string | undefined;
+  let appliedCouponCode: string | undefined;
+  if (couponCode) {
+    const coupon = await CouponRepository.findByCode(couponCode);
+    const eligibility = await CouponRepository.checkEligibility(getDbPool(), coupon,
+      { userId: auth.user.id, restaurantId: restaurant.id }
+    );
+    if (!eligibility.ok) {
+      couponError = eligibility.reason;
+    } else {
+      const evaluation = PricingCalculator.evaluateCoupon(
+        eligibility.rule,
+        subtotal,
+        PricingCalculator.calculateDeliveryFee(roadRoute.distanceMeters)
+      );
+      if (evaluation.applicable) {
+        couponRule = eligibility.rule;
+        appliedCouponCode = coupon!.code;
+      } else {
+        couponError = evaluation.reason;
       }
     }
-
-    // 6. Canonical pricing calculation
-    const breakdown = PricingCalculator.calculate({
-      lines: quoteLines.map((l) => ({
-        basePricePaise: l.basePricePaise,
-        optionsPricePaise: l.optionsPricePaise,
-        quantity: l.quantity,
-      })),
-      distanceMeters,
-      coupon: couponDiscountRule,
-    });
-
-    // 7. Store Quote
-    const user = await getOrCreateDbUser(actor);
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
-
-    const db = getDb();
-    const [savedQuote] = await db
-      .insert(quotes)
-      .values({
-        customerId: user.id,
-        restaurantId: restaurant.id,
-        deliveryAddressId: deliveryAddressId ?? null,
-        itemsJson: quoteLines,
-        breakdownJson: breakdown,
-        estimatedMinMinutes: restaurant.deliveryTimeMinMinutes,
-        estimatedMaxMinutes: restaurant.deliveryTimeMaxMinutes,
-        expiresAt,
-      })
-      .returning();
-
-    if (!savedQuote) {
-      return apiError("INTERNAL_ERROR", "Failed to persist quote", 500);
-    }
-
-    return apiSuccess({
-      quoteId: savedQuote.id,
-      restaurantId: restaurant.id,
-      items: quoteLines,
-      breakdown,
-      estimatedMinMinutes: restaurant.deliveryTimeMinMinutes,
-      estimatedMaxMinutes: restaurant.deliveryTimeMaxMinutes,
-      expiresAt: expiresAt.toISOString(),
-    });
-  } catch (err: any) {
-    return apiError("INTERNAL_ERROR", err.message || "Failed to generate quote", 500);
   }
-}
+
+  const breakdown = PricingCalculator.calculate({
+    lines: quoteLines,
+    distanceMeters: roadRoute.distanceMeters,
+    packagingFeePaise: restaurant.packagingFeePaise,
+    coupon: couponRule,
+    tipPaise,
+  });
+
+  const eta = EtaCalculator.calculate({
+    prepTimeMinutes: restaurant.avgPrepMinutes,
+    travelToPickupMinutes: 8,
+    lastMileTravelMinutes: Math.ceil(roadRoute.durationSeconds / 60),
+  });
+
+  // 7. Persist the quote: checkout charges exactly this, or asks the customer to re-price
+  const expiresAt = new Date(Date.now() + QUOTE_TTL_MINUTES * 60 * 1000);
+  const [savedQuote] = await getDb()
+    .insert(quotes)
+    .values({
+      customerId: auth.user.id,
+      restaurantId: restaurant.id,
+      deliveryAddressId: deliveryAddressId ?? null,
+      itemsJson: quoteLines,
+      breakdownJson: breakdown,
+      estimatedMinMinutes: eta.minEtaMinutes,
+      estimatedMaxMinutes: eta.maxEtaMinutes,
+      couponCode: appliedCouponCode ?? null,
+      distanceMeters: roadRoute.distanceMeters,
+      destinationLatitude: destination.latitude,
+      destinationLongitude: destination.longitude,
+      expiresAt,
+    })
+    .returning();
+
+  if (!savedQuote) throw new Error("Failed to persist quote");
+
+  const response: QuoteResponse = {
+    quoteId: savedQuote.id,
+    restaurantId: restaurant.id,
+    items: quoteLines,
+    breakdown,
+    estimatedMinMinutes: eta.minEtaMinutes,
+    estimatedMaxMinutes: eta.maxEtaMinutes,
+    expiresAt: expiresAt.toISOString(),
+    appliedCouponCode,
+    couponError,
+  };
+  return apiSuccess(response, 200, { requestId });
+});

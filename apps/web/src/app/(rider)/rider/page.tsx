@@ -1,360 +1,327 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
-import Link from "next/link";
-import {
-  Bike,
-  Navigation,
-  MapPin,
-  CheckCircle2,
-  Clock,
-  KeyRound,
-  ShieldCheck,
-  ArrowLeft,
-  RefreshCw,
-  Phone,
-  Radio,
-  Store,
-  Zap,
-} from "lucide-react";
-import { DeliveryTripStatus, OrderDetailDto } from "@startup/contracts";
-import { createApiClient } from "@/lib/api-client";
+import React, { useEffect, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { MapPin, Navigation, Phone, Power, Store, Timer, Wallet } from "lucide-react";
+import { DeliveryTripStatus } from "@startup/contracts";
+import { PortalHeader, RoleGate } from "@/components/portal/role-gate";
+import { Modal } from "@/components/ui/modal";
+import { Spinner } from "@/components/ui/misc";
+import { useToast } from "@/components/ui/toast";
+import { ApiError, errorMessage, useApi } from "@/lib/api";
+import { playChime, unlockAudio } from "@/lib/alert-sound";
+import { formatDistance, formatRupees } from "@/lib/format";
+import { directionsUrl } from "@/lib/geo";
 
-export default function RiderPortalPage() {
-  const [isOnline, setIsOnline] = useState(true);
-  const [activeTrip, setActiveTrip] = useState<any>(null);
-  const [activeOrder, setActiveOrder] = useState<OrderDetailDto | null>(null);
-  const [pendingOffer, setPendingOffer] = useState<any>(null);
-  const [offerOrder, setOfferOrder] = useState<OrderDetailDto | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [otpInput, setOtpInput] = useState("");
-  const [acceptingOffer, setAcceptingOffer] = useState(false);
+const PING_INTERVAL_MS = 10_000;
 
-  const fetchTrip = async () => {
-    try {
-      const client = createApiClient();
-      const res = await client.getRiderActiveTrip();
-      if (res.hasActiveTrip) {
-        setActiveTrip(res.assignment);
-        setActiveOrder(res.order);
-        setPendingOffer(null);
-        setOfferOrder(null);
-      } else {
-        setActiveTrip(null);
-        setActiveOrder(null);
-        setPendingOffer(res.pendingOffer);
-        setOfferOrder(res.offerOrder);
-      }
-    } catch (err) {
-      console.error("Failed to fetch rider trip:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
+/**
+ * Streams the rider's GPS position while online. Browsers pause this when the PWA
+ * is backgrounded; a screen wake lock keeps it alive while the app is in front.
+ */
+function useLocationBroadcast(enabled: boolean) {
+  const api = useApi();
+  const [error, setError] = useState<string | null>(null);
+  const last = useRef(0);
 
   useEffect(() => {
-    fetchTrip();
-    const interval = setInterval(fetchTrip, 3000);
-    return () => clearInterval(interval);
+    if (!enabled || !("geolocation" in navigator)) return;
+    let wakeLock: { release: () => Promise<void> } | null = null;
+    (navigator as Navigator & { wakeLock?: { request: (t: "screen") => Promise<{ release: () => Promise<void> }> } }).wakeLock
+      ?.request("screen")
+      .then((lock) => (wakeLock = lock))
+      .catch(() => undefined);
+
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        setError(null);
+        if (Date.now() - last.current < PING_INTERVAL_MS) return;
+        last.current = Date.now();
+        api
+          .riderUpdateLocation({
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+            accuracyMeters: pos.coords.accuracy,
+            headingDegrees: pos.coords.heading ?? undefined,
+            speedMps: pos.coords.speed ?? undefined,
+            capturedAt: new Date(pos.timestamp).toISOString(),
+          })
+          .catch(() => undefined);
+      },
+      (err) => setError(err.code === err.PERMISSION_DENIED ? "Location permission is required to receive orders." : "Waiting for GPS signal…"),
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 20_000 }
+    );
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+      void wakeLock?.release().catch(() => undefined);
+    };
+  }, [enabled, api]);
+
+  return error;
+}
+
+function OfferCountdown({ expiresAt }: { expiresAt: string }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(t);
   }, []);
+  const left = Math.max(0, Math.round((new Date(expiresAt).getTime() - now) / 1000));
+  return <span className={`font-black ${left < 10 ? "text-red-600" : ""}`}>{left}s</span>;
+}
 
-  const handleAcceptOffer = async (offerId: string) => {
-    setAcceptingOffer(true);
+function RiderApp() {
+  const api = useApi();
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [code, setCode] = useState("");
+  const [failOpen, setFailOpen] = useState(false);
+  const [failReason, setFailReason] = useState("Customer not reachable");
+  const lastOfferId = useRef<string | null>(null);
+
+  const trip = useQuery({ queryKey: ["rider-trip"], queryFn: () => api.getRiderActiveTrip(), refetchInterval: 4000, refetchIntervalInBackground: true });
+  const online = trip.data?.rider.isOnline ?? false;
+  const gpsError = useLocationBroadcast(online);
+
+  useEffect(() => {
+    const offerId = trip.data?.pendingOffer?.id ?? null;
+    if (offerId && offerId !== lastOfferId.current) playChime();
+    lastOfferId.current = offerId;
+  }, [trip.data?.pendingOffer?.id]);
+
+  const run = async (fn: () => Promise<unknown>, ok?: string) => {
+    setBusy(true);
     try {
-      const client = createApiClient();
-      await client.riderAcceptOffer(offerId);
-      alert("Offer accepted! Order successfully assigned to you.");
-      await fetchTrip();
-    } catch (err: any) {
-      alert(`Accept offer failed: ${err.message}`);
+      await fn();
+      if (ok) toast(ok, "success");
+      setCode("");
+    } catch (err) {
+      toast(errorMessage(err), "error");
+      if (err instanceof ApiError && err.code === "VALIDATION_ERROR") return;
     } finally {
-      setAcceptingOffer(false);
+      setBusy(false);
+      queryClient.invalidateQueries({ queryKey: ["rider-trip"] });
     }
   };
 
-  const handleMilestone = async (nextStatus: DeliveryTripStatus) => {
-    if (!activeTrip || !activeOrder) return;
-    try {
-      const client = createApiClient();
-      await client.riderUpdateMilestone(
-        activeTrip.id,
-        activeOrder.orderId,
-        nextStatus
-      );
-      await fetchTrip();
-    } catch (err: any) {
-      alert(`Milestone update failed: ${err.message}`);
-    }
-  };
+  if (trip.isPending) return <div className="p-10 text-center"><Spinner /></div>;
+  if (!trip.data) return <p className="p-6 text-sm text-red-700">{errorMessage(trip.error)}</p>;
 
-  const handleCompleteDeliveryWithOtp = async () => {
-    if (!activeTrip || !activeOrder || !otpInput.trim()) return;
-    try {
-      const client = createApiClient();
-      await client.riderUpdateMilestone(
-        activeTrip.id,
-        activeOrder.orderId,
-        DeliveryTripStatus.COMPLETED,
-        otpInput.trim()
-      );
+  const { assignment, order, pickupLocation, pendingOffer, offerOrder } = trip.data;
+  const earnings = (o?: { breakdown: { deliveryFeePaise: number; surgePaise: number; tipPaise?: number } } | null) =>
+    o ? o.breakdown.deliveryFeePaise + o.breakdown.surgePaise + (o.breakdown.tipPaise ?? 0) : 0;
 
-      alert("Delivery successfully verified and completed! Earnings credited.");
-      setOtpInput("");
-      await fetchTrip();
-    } catch (err: any) {
-      alert(`Delivery verification failed: ${err.message}`);
-    }
-  };
-
-  const handleSimulateGps = async () => {
-    try {
-      const client = createApiClient();
-      await client.riderUpdateLocation({
-        latitude: 28.6318,
-        longitude: 77.2172,
-      });
-      alert("Simulated GPS ping sent! Server recorded fresh rider coordinates.");
-    } catch (err: any) {
-      alert(`GPS ping failed: ${err.message}`);
-    }
-  };
+  const step = (next: "AT_PICKUP" | "PICKED_UP" | "AT_DROPOFF" | "COMPLETED", extra: { challengeCode?: string } = {}, ok?: string) =>
+    run(() => api.riderUpdateMilestone({ assignmentId: assignment!.id, nextStatus: next, ...extra }), ok);
 
   return (
-    <div className="min-h-screen bg-surface-muted">
-      {/* Rider Header */}
-      <header className="bg-[#12161f] text-white sticky top-0 z-30 shadow-md">
-        <div className="max-w-4xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Link
-              href="/"
-              className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 transition-colors"
-            >
-              <ArrowLeft className="w-4 h-4 text-white" />
-            </Link>
-            <div className="flex items-center gap-2">
-              <Bike className="w-5 h-5 text-brand" />
-              <h1 className="font-bold text-sm sm:text-base">Amit Kumar (Fleet Partner)</h1>
-            </div>
-          </div>
+    <>
+      <PortalHeader
+        title="Delivery partner"
+        right={
+          <button
+            disabled={busy || !!assignment}
+            onClick={() => {
+              unlockAudio();
+              run(() => api.riderSetOnline(!online), online ? "You are offline" : "You are online");
+            }}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-black ${online ? "bg-success" : "bg-white/20"}`}
+          >
+            <Power className="w-4 h-4" /> {online ? "Online" : "Offline"}
+          </button>
+        }
+      />
+      <div className="max-w-lg mx-auto px-4 py-4 space-y-4">
+        {online && gpsError && <p className="p-3 rounded-xl bg-amber-50 text-amber-900 text-xs font-semibold">{gpsError}</p>}
 
-          <div className="flex items-center gap-3">
-            <button
-              onClick={handleSimulateGps}
-              className="px-2.5 py-1 bg-white/10 hover:bg-white/20 text-white rounded-lg text-xs flex items-center gap-1.5"
-            >
-              <Radio className="w-3.5 h-3.5 text-success animate-pulse" />
-              <span>Ping GPS</span>
-            </button>
-
-            <button
-              onClick={() => setIsOnline(!isOnline)}
-              className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all flex items-center gap-1.5 ${
-                isOnline ? "bg-success text-white" : "bg-gray-600 text-gray-200"
-              }`}
-            >
-              <span className="w-2 h-2 rounded-full bg-white" />
-              <span>{isOnline ? "Online" : "Offline"}</span>
-            </button>
-          </div>
-        </div>
-      </header>
-
-      {/* Main Rider Console */}
-      <main className="max-w-4xl mx-auto px-4 py-8 space-y-6">
-        {/* Case 1: Active Delivery Trip */}
-        {activeTrip && activeOrder ? (
-          <div className="bg-white rounded-3xl border border-border p-6 shadow-xl space-y-6">
-            <div className="flex items-center justify-between border-b border-border pb-4">
-              <div>
-                <span className="text-[10px] font-bold text-brand uppercase bg-brand-light px-2.5 py-0.5 rounded-full">
-                  Trip #{activeTrip.status}
-                </span>
-                <h2 className="text-xl font-black text-text-primary mt-1">
-                  Order #{activeOrder.orderNumber}
-                </h2>
-                <p className="text-xs text-text-secondary">
-                  Estimated Trip Payout: <strong className="text-success text-sm">₹65.00</strong>
-                </p>
-              </div>
-
-              <div className="p-3 bg-surface-muted rounded-2xl text-center">
-                <Navigation className="w-5 h-5 text-brand mx-auto mb-0.5" />
-                <span className="text-[10px] font-bold text-text-secondary">Navigation</span>
-              </div>
-            </div>
-
-            {/* Pickup & Dropoff Waypoints */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {/* Pickup Restaurant */}
-              <div className="p-4 rounded-2xl bg-surface-muted border border-border space-y-1">
-                <div className="flex items-center gap-1.5 text-xs font-bold text-text-secondary">
-                  <Store className="w-4 h-4 text-brand" />
-                  <span>Pickup Restaurant</span>
-                </div>
-                <h4 className="font-bold text-sm text-text-primary">
-                  {activeOrder.restaurant.name}
-                </h4>
-                <p className="text-xs text-text-secondary">{activeOrder.restaurant.phone}</p>
-              </div>
-
-              {/* Dropoff Customer */}
-              <div className="p-4 rounded-2xl bg-surface-muted border border-border space-y-1">
-                <div className="flex items-center gap-1.5 text-xs font-bold text-text-secondary">
-                  <MapPin className="w-4 h-4 text-success" />
-                  <span>Customer Dropoff</span>
-                </div>
-                <h4 className="font-bold text-sm text-text-primary">
-                  {activeOrder.deliveryAddress.building}
-                </h4>
-                <p className="text-xs text-text-secondary">
-                  {activeOrder.deliveryAddress.street}
-                </p>
-              </div>
-            </div>
-
-            {/* Trip Milestone Actions */}
-            <div className="pt-4 border-t border-border space-y-4">
-              <h3 className="font-bold text-sm text-text-primary">Trip Progression Milestones</h3>
-
-              {activeTrip.status === DeliveryTripStatus.ASSIGNED && (
-                <button
-                  onClick={() => handleMilestone(DeliveryTripStatus.AT_PICKUP)}
-                  className="w-full py-3.5 bg-brand hover:bg-brand-hover text-white text-xs font-black rounded-2xl shadow-lg transition-all"
-                >
-                  Arrived at Restaurant Pickup
-                </button>
-              )}
-
-              {activeTrip.status === DeliveryTripStatus.AT_PICKUP && (
-                <button
-                  onClick={() => handleMilestone(DeliveryTripStatus.PICKED_UP)}
-                  className="w-full py-3.5 bg-brand hover:bg-brand-hover text-white text-xs font-black rounded-2xl shadow-lg transition-all"
-                >
-                  Verify Food Package Picked Up
-                </button>
-              )}
-
-              {activeTrip.status === DeliveryTripStatus.PICKED_UP && (
-                <button
-                  onClick={() => handleMilestone(DeliveryTripStatus.AT_DROPOFF)}
-                  className="w-full py-3.5 bg-brand hover:bg-brand-hover text-white text-xs font-black rounded-2xl shadow-lg transition-all"
-                >
-                  Arrived at Customer Doorstep
-                </button>
-              )}
-
-              {activeTrip.status === DeliveryTripStatus.AT_DROPOFF && (
-                <div className="p-4 bg-brand-light/50 border border-brand/30 rounded-2xl space-y-3">
-                  <div>
-                    <h4 className="font-bold text-sm text-text-primary flex items-center gap-1.5">
-                      <KeyRound className="w-4 h-4 text-brand" />
-                      <span>Enter Customer Delivery OTP</span>
-                    </h4>
-                    <p className="text-xs text-text-secondary mt-0.5">
-                      Ask the customer for the 6-digit verification code shown on their order tracking screen
-                    </p>
-                  </div>
-
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={otpInput}
-                      onChange={(e) => setOtpInput(e.target.value)}
-                      placeholder="e.g. 123456"
-                      maxLength={6}
-                      className="flex-1 p-3 bg-white border border-border rounded-xl text-center text-lg font-black tracking-widest focus:outline-none focus:ring-2 focus:ring-brand"
-                    />
-                    <button
-                      onClick={handleCompleteDeliveryWithOtp}
-                      disabled={!otpInput.trim()}
-                      className="px-6 py-3 bg-success hover:bg-emerald-700 text-white font-black text-xs rounded-xl shadow-md transition-all"
-                    >
-                      Verify & Deliver
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        ) : pendingOffer ? (
-          /* Case 2: Pending Dispatch Offer Card */
-          <div className="bg-white rounded-3xl border-2 border-brand p-6 shadow-2xl space-y-6 relative overflow-hidden">
-            <div className="absolute top-0 right-0 bg-brand text-white px-4 py-1 text-xs font-black rounded-bl-2xl uppercase tracking-wider flex items-center gap-1">
-              <Zap className="w-3.5 h-3.5 fill-current" />
-              <span>Incoming Dispatch Offer</span>
-            </div>
-
-            <div className="pt-2">
-              <span className="text-[10px] font-black text-brand uppercase bg-brand-light px-2.5 py-0.5 rounded-full">
-                Offer Active
-              </span>
-              <h2 className="text-2xl font-black text-text-primary mt-1">
-                New Delivery Available
-              </h2>
-              <p className="text-sm text-text-secondary mt-0.5">
-                Guaranteed Partner Payout: <strong className="text-success text-base">₹65.00</strong>
-              </p>
-            </div>
-
-            {offerOrder && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="p-4 rounded-2xl bg-surface-muted border border-border space-y-1">
-                  <div className="flex items-center gap-1.5 text-xs font-bold text-text-secondary">
-                    <Store className="w-4 h-4 text-brand" />
-                    <span>Pickup From</span>
-                  </div>
-                  <h4 className="font-bold text-sm text-text-primary">
-                    {offerOrder.restaurant.name}
-                  </h4>
-                  <p className="text-xs text-text-secondary">{offerOrder.restaurant.phone}</p>
-                </div>
-
-                <div className="p-4 rounded-2xl bg-surface-muted border border-border space-y-1">
-                  <div className="flex items-center gap-1.5 text-xs font-bold text-text-secondary">
-                    <MapPin className="w-4 h-4 text-success" />
-                    <span>Deliver To</span>
-                  </div>
-                  <h4 className="font-bold text-sm text-text-primary">
-                    {offerOrder.deliveryAddress.building}
-                  </h4>
-                  <p className="text-xs text-text-secondary">
-                    {offerOrder.deliveryAddress.street}
-                  </p>
-                </div>
-              </div>
-            )}
-
-            <button
-              onClick={() => handleAcceptOffer(pendingOffer.id)}
-              disabled={acceptingOffer}
-              className="w-full py-4 bg-brand hover:bg-brand-hover disabled:bg-gray-400 text-white font-black text-sm rounded-2xl shadow-xl transition-all flex items-center justify-center gap-2"
-            >
-              {acceptingOffer ? (
-                <>
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Claiming Offer...</span>
-                </>
-              ) : (
-                <>
-                  <CheckCircle2 className="w-5 h-5" />
-                  <span>Accept Delivery Job (Claim Offer)</span>
-                </>
-              )}
-            </button>
-          </div>
-        ) : (
-          /* Case 3: Idle / Waiting for Offers */
-          <div className="p-12 text-center bg-white rounded-3xl border border-border shadow-xs space-y-3">
-            <div className="w-16 h-16 rounded-full bg-surface-muted flex items-center justify-center mx-auto text-text-secondary">
-              <Bike className="w-8 h-8 text-brand" />
-            </div>
-            <h3 className="font-bold text-lg text-text-primary">No Active Delivery Trips</h3>
-            <p className="text-xs text-text-secondary max-w-sm mx-auto">
-              You are online and ready for dispatch. When a nearby customer places an order and kitchen marks it ready, you will receive an offer alert here.
+        {!assignment && !pendingOffer && (
+          <div className="p-8 text-center rounded-3xl bg-surface-muted border border-border">
+            <p className="text-lg font-black">{online ? "Looking for orders near you…" : "You are offline"}</p>
+            <p className="text-sm text-text-secondary mt-1">
+              {online ? "Keep this screen open. New requests will ring." : "Go online to start receiving delivery requests."}
             </p>
           </div>
         )}
-      </main>
-    </div>
+
+        {!assignment && pendingOffer && offerOrder && (
+          <section className="rounded-3xl border-2 border-brand p-5 space-y-4 bg-white shadow-xl">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-black">New delivery request</h2>
+              <span className="flex items-center gap-1 text-sm">
+                <Timer className="w-4 h-4" /> <OfferCountdown expiresAt={pendingOffer.expiresAt} />
+              </span>
+            </div>
+            <div className="space-y-2 text-sm">
+              <p className="flex gap-2">
+                <Store className="w-4 h-4 text-brand shrink-0 mt-0.5" />
+                <span>
+                  <b>{offerOrder.restaurant.name}</b>
+                  {pendingOffer.distanceToPickupMeters !== undefined && <span className="text-text-secondary"> · {formatDistance(pendingOffer.distanceToPickupMeters)} away</span>}
+                </span>
+              </p>
+              <p className="flex gap-2">
+                <MapPin className="w-4 h-4 text-text-secondary shrink-0 mt-0.5" /> Drop: {offerOrder.deliveryAddress.street}
+              </p>
+              <p className="flex gap-2 font-bold text-success">
+                <Wallet className="w-4 h-4 shrink-0 mt-0.5" /> Earn {formatRupees(earnings(offerOrder))}
+              </p>
+            </div>
+            <div className="flex gap-3">
+              <button disabled={busy} onClick={() => run(() => api.riderRejectOffer(pendingOffer.id))} className="flex-1 py-3 rounded-xl border border-border font-bold text-sm">
+                Decline
+              </button>
+              <button disabled={busy} onClick={() => run(() => api.riderAcceptOffer(pendingOffer.id), "Trip accepted")} className="flex-[2] py-3 rounded-xl bg-success text-white font-black text-sm">
+                Accept
+              </button>
+            </div>
+          </section>
+        )}
+
+        {assignment && order && (
+          <section className="rounded-3xl border border-border p-5 space-y-4 bg-white">
+            <div className="flex items-center justify-between text-xs font-bold text-text-secondary">
+              <span>#{order.orderNumber}</span>
+              <span>Earn {formatRupees(earnings(order))}</span>
+            </div>
+
+            {(assignment.status === DeliveryTripStatus.ASSIGNED || assignment.status === DeliveryTripStatus.AT_PICKUP) && (
+              <>
+                <div>
+                  <p className="text-xs uppercase font-bold text-text-secondary">Pick up from</p>
+                  <p className="text-lg font-black">{order.restaurant.name}</p>
+                  {order.restaurant.phone && (
+                    <a href={`tel:${order.restaurant.phone}`} className="text-xs font-bold text-brand inline-flex items-center gap-1 mt-1">
+                      <Phone className="w-3 h-3" /> Call restaurant
+                    </a>
+                  )}
+                </div>
+                <ul className="text-sm bg-surface-muted rounded-xl p-3 space-y-1">
+                  {order.items.map((i, idx) => (
+                    <li key={idx}>
+                      {i.quantity} × {i.name}
+                      {i.variantName && ` (${i.variantName})`}
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-xs text-text-secondary">Kitchen status: {order.fulfillmentState.replace(/_/g, " ").toLowerCase()}</p>
+              </>
+            )}
+
+            {assignment.status === DeliveryTripStatus.ASSIGNED && pickupLocation && (
+              <div className="flex gap-3">
+                <a href={directionsUrl(pickupLocation)} target="_blank" rel="noreferrer" className="flex-1 py-3 rounded-xl border border-border font-bold text-sm flex items-center justify-center gap-2">
+                  <Navigation className="w-4 h-4" /> Navigate
+                </a>
+                <button disabled={busy} onClick={() => step("AT_PICKUP")} className="flex-1 py-3 rounded-xl bg-brand text-white font-bold text-sm">
+                  Reached restaurant
+                </button>
+              </div>
+            )}
+
+            {assignment.status === DeliveryTripStatus.AT_PICKUP && (
+              <div className="space-y-2">
+                {order.fulfillmentState !== "READY_FOR_PICKUP" && (
+                  <input
+                    value={code}
+                    onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                    inputMode="numeric"
+                    placeholder="Pickup code from restaurant"
+                    aria-label="Pickup code"
+                    className="w-full p-3 text-center tracking-[0.4em] text-lg font-black bg-surface-muted border border-border rounded-xl"
+                  />
+                )}
+                <button disabled={busy} onClick={() => step("PICKED_UP", { challengeCode: code || undefined }, "Order picked up")} className="w-full py-3 rounded-xl bg-brand text-white font-black text-sm">
+                  Confirm pickup
+                </button>
+              </div>
+            )}
+
+            {(assignment.status === DeliveryTripStatus.PICKED_UP || assignment.status === DeliveryTripStatus.AT_DROPOFF) && (
+              <>
+                <div>
+                  <p className="text-xs uppercase font-bold text-text-secondary">Deliver to</p>
+                  <p className="text-base font-black">{order.deliveryAddress.building}</p>
+                  <p className="text-sm text-text-secondary">{order.deliveryAddress.street}</p>
+                  {order.deliveryAddress.landmark && <p className="text-xs text-text-secondary">Near {order.deliveryAddress.landmark}</p>}
+                  {order.instructions && <p className="text-xs mt-1 bg-amber-50 text-amber-900 p-2 rounded-lg">{order.instructions}</p>}
+                </div>
+                <div className="flex gap-3">
+                  <a href={directionsUrl(order.deliveryAddress)} target="_blank" rel="noreferrer" className="flex-1 py-3 rounded-xl border border-border font-bold text-sm flex items-center justify-center gap-2">
+                    <Navigation className="w-4 h-4" /> Navigate
+                  </a>
+                  {order.deliveryAddress.contactPhone && (
+                    <a href={`tel:${order.deliveryAddress.contactPhone}`} className="flex-1 py-3 rounded-xl border border-border font-bold text-sm flex items-center justify-center gap-2">
+                      <Phone className="w-4 h-4" /> Call customer
+                    </a>
+                  )}
+                </div>
+              </>
+            )}
+
+            {assignment.status === DeliveryTripStatus.PICKED_UP && (
+              <button disabled={busy} onClick={() => step("AT_DROPOFF")} className="w-full py-3 rounded-xl bg-brand text-white font-bold text-sm">
+                Reached customer
+              </button>
+            )}
+
+            {assignment.status === DeliveryTripStatus.AT_DROPOFF && (
+              <div className="space-y-2">
+                <input
+                  value={code}
+                  onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  placeholder="Customer's OTP"
+                  aria-label="Delivery OTP"
+                  className="w-full p-3 text-center tracking-[0.5em] text-2xl font-black bg-surface-muted border border-border rounded-xl"
+                />
+                <button disabled={busy || code.length < 4} onClick={() => step("COMPLETED", { challengeCode: code }, "Delivered! Great job.")} className="w-full py-3 rounded-xl bg-success text-white font-black text-sm disabled:opacity-50">
+                  Complete delivery
+                </button>
+                <button onClick={() => setFailOpen(true)} className="w-full text-xs text-text-secondary underline">
+                  Customer unavailable?
+                </button>
+              </div>
+            )}
+          </section>
+        )}
+      </div>
+
+      <Modal
+        open={failOpen}
+        onClose={() => setFailOpen(false)}
+        size="sm"
+        title="Mark delivery as failed"
+        description="Allowed after waiting 10 minutes at the location and trying to call the customer."
+        footer={
+          <button
+            disabled={busy}
+            onClick={() => {
+              setFailOpen(false);
+              run(() => api.riderUpdateMilestone({ assignmentId: assignment!.id, nextStatus: "FAILED", failureReason: failReason }), "Reported to support");
+            }}
+            className="w-full py-3 rounded-xl bg-red-600 text-white font-bold text-sm"
+          >
+            Report failed delivery
+          </button>
+        }
+      >
+        <select value={failReason} onChange={(e) => setFailReason(e.target.value)} className="w-full p-3 rounded-xl border border-border text-sm">
+          <option>Customer not reachable</option>
+          <option>Wrong or incomplete address</option>
+          <option>Customer refused the order</option>
+          <option>Unsafe location</option>
+        </select>
+      </Modal>
+    </>
+  );
+}
+
+export default function RiderPage() {
+  return (
+    <RoleGate roles={["RIDER"]} title="Delivery partner app">
+      <RiderApp />
+    </RoleGate>
   );
 }

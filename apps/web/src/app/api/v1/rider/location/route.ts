@@ -1,47 +1,43 @@
-import { NextRequest } from "next/server";
-import { RiderLocationPingSchema, UserRole } from "@startup/contracts";
-import { RiderRepository, SEED_IDS } from "@startup/database";
-import { UpstashRedisAdapter } from "@startup/integrations";
-import { apiError, apiSuccess } from "@/server/api-response";
-import { getAuthenticatedActor, getOrCreateDbUser } from "@/server/auth-guard";
+import { RiderLocationPingSchema } from "@startup/contracts";
+import { DomainError } from "@startup/core";
+import { RiderRepository } from "@startup/database";
+import { getRedis } from "@startup/integrations";
+import { apiSuccess } from "@/server/api-response";
+import { requireAuth, requireRiderProfile } from "@/server/auth-guard";
+import { enforceRateLimit } from "@/server/rate-limit";
+import { parseBody, route } from "@/server/route";
 
-export async function POST(req: NextRequest) {
-  try {
-    const actor = await getAuthenticatedActor(req);
-    if (!actor) {
-      return apiError("UNAUTHORIZED", "Authentication required", 401);
-    }
-    if (actor.role !== UserRole.RIDER && actor.role !== UserRole.ADMIN) {
-      return apiError("FORBIDDEN", "Forbidden: Rider role required", 403);
-    }
+// Pings older than this (queued while offline) are not "current" positions
+const MAX_PING_AGE_MS = 2 * 60 * 1000;
+// GPS fixes worse than this are ignored for dispatch and tracking
+const MAX_ACCURACY_METERS = 500;
 
-    const body = await req.json();
-    const parsed = RiderLocationPingSchema.safeParse(body);
-    if (!parsed.success) {
-      return apiError("VALIDATION_ERROR", "Invalid GPS coordinates", 400, parsed.error.format());
-    }
+export const POST = route(async (req, _ctx, requestId) => {
+  const auth = await requireAuth(req);
+  const rider = await requireRiderProfile(auth);
+  await enforceRateLimit(req, "riderLocation", rider.id);
+  const ping = await parseBody(req, RiderLocationPingSchema);
 
-    const user = await getOrCreateDbUser(actor);
-    let rider = await RiderRepository.findByUserId(user.id);
-    if (!rider && actor.role === UserRole.ADMIN) {
-      rider = await RiderRepository.findById(SEED_IDS.riderId);
-    }
-    if (!rider) {
-      return apiError("NOT_FOUND", "Rider profile not found for authenticated user", 404);
-    }
-
-    const { latitude, longitude } = parsed.data;
-    const riderId = rider.id;
-
-    // 1. Update hot telemetry in Redis
-    const upstash = new UpstashRedisAdapter();
-    await upstash.updateRiderLocation(riderId, { latitude, longitude });
-
-    // 2. Persist in database
-    await RiderRepository.updateLocation(riderId, latitude, longitude);
-
-    return apiSuccess({ success: true, riderId, latitude, longitude });
-  } catch (err: any) {
-    return apiError("INTERNAL_ERROR", err.message || "Failed to update rider location", 500);
+  const capturedAt = new Date(ping.capturedAt).getTime();
+  if (Number.isNaN(capturedAt)) throw new DomainError("VALIDATION_ERROR", "capturedAt must be an ISO timestamp");
+  const ageMs = Date.now() - capturedAt;
+  if (ageMs > MAX_PING_AGE_MS || ageMs < -30_000) {
+    return apiSuccess({ accepted: false, reason: "STALE_OR_FUTURE_PING" }, 200, { requestId });
   }
-}
+  if (ping.accuracyMeters !== undefined && ping.accuracyMeters > MAX_ACCURACY_METERS) {
+    return apiSuccess({ accepted: false, reason: "LOW_ACCURACY" }, 200, { requestId });
+  }
+
+  // Hot path: Redis holds the live stream for tracking; Postgres gets a throttled copy for dispatch
+  await getRedis().updateRiderLocation(rider.id, {
+    latitude: ping.latitude,
+    longitude: ping.longitude,
+    headingDegrees: ping.headingDegrees,
+    speedMps: ping.speedMps,
+    accuracyMeters: ping.accuracyMeters,
+    updatedAt: new Date(capturedAt).toISOString(),
+  });
+  await RiderRepository.updateLocation(rider.id, ping.latitude, ping.longitude, ping.headingDegrees);
+
+  return apiSuccess({ accepted: true }, 200, { requestId });
+});

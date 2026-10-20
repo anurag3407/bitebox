@@ -45,3 +45,24 @@
 - **Rider**: Fleet portal with active delivery trip view, navigation route overview, milestone transitions (Arrived at Store, Picked Up, Arrived at Customer), and 6-digit secure delivery OTP handshake verification.
 - **Admin**: Live operational command board showing active platform orders, state transition overrides, and one-click financial refund processing with automatic ledger posting.
 - **Authentication**: Seamless persona switcher allowing instant toggling between Customer (Rahul), Merchant (Vikram), Rider (Amit), and Admin (Siddharth) across all pages.
+
+
+---
+
+## 2026-10-20: Production hardening pass
+
+The milestones above described a demo. A review found critical issues (auth bypass, payment-signature bypass,
+unauthenticated admin API, refunds never sent to the gateway, no working dispatch, ledger failures on coupons).
+See [production-readiness.md](production-readiness.md) for the full list, fixes, architecture and remaining gaps.
+
+Verification evidence for this pass:
+- `pnpm typecheck` passes for all 8 workspaces.
+- `pnpm test`: 92 tests across 9 files pass against a fresh PostgreSQL 15 database, repeatably.
+  Includes a full browse→pay→cook→dispatch→deliver→rate flow through real route handlers and the worker,
+  security tests with real RS256 JWTs, payment/webhook edge cases and worker failure modes.
+- `next build` succeeds (production). Manual HTTP smoke test of the production build with the worker running:
+  quote → checkout → payment → merchant accept → worker dispatch → rider pickup → SSE tracking → OTP delivery → rating,
+  ledger balanced and outbox drained.
+- Not verified here: Docker image builds / compose deployment (Docker unavailable), real Clerk / Razorpay / Upstash /
+  Mapbox / Fast2SMS / Brevo / Web Push credentials, and browser UI (pages return 200 and build cleanly but were not
+  exercised in a browser).

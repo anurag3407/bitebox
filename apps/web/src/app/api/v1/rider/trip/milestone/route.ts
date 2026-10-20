@@ -1,64 +1,40 @@
-import { NextRequest } from "next/server";
-import { DeliveryTripStatus, UserRole } from "@startup/contracts";
-import { OrderRepository, RiderRepository, SEED_IDS } from "@startup/database";
+import { DeliveryTripStatus, RiderMilestoneRequestSchema } from "@startup/contracts";
+import { DomainError } from "@startup/core";
+import { RiderRepository } from "@startup/database";
 import { apiError, apiSuccess } from "@/server/api-response";
-import { getAuthenticatedActor, getOrCreateDbUser } from "@/server/auth-guard";
+import { requireAuth, requireRiderProfile } from "@/server/auth-guard";
+import { enforceRateLimit } from "@/server/rate-limit";
+import { parseBody, route } from "@/server/route";
 
-export async function POST(req: NextRequest) {
-  try {
-    const body = await req.json();
-    const { assignmentId, orderId, nextStatus, challengeCode } = body;
-
-    if (!assignmentId || !orderId || !nextStatus) {
-      return apiError("VALIDATION_ERROR", "assignmentId, orderId, and nextStatus are required", 400);
-    }
-
-    const actor = await getAuthenticatedActor(req);
-    if (!actor) {
-      return apiError("UNAUTHORIZED", "Authentication required", 401);
-    }
-    if (actor.role !== UserRole.RIDER && actor.role !== UserRole.ADMIN) {
-      return apiError("FORBIDDEN", "Forbidden: Rider role required", 403);
-    }
-
-    const user = await getOrCreateDbUser(actor);
-    let rider = await RiderRepository.findByUserId(user.id);
-    if (!rider && actor.role === UserRole.ADMIN) {
-      rider = await RiderRepository.findById(SEED_IDS.riderId);
-    }
-    if (!rider) {
-      return apiError("NOT_FOUND", "Rider profile not found", 404);
-    }
-    const riderId = rider.id;
-
-    // Verification challenge OTP checks: mandatory for completing delivery
-    const order = await OrderRepository.findById(orderId);
-    if (!order) {
-      return apiError("NOT_FOUND", "Order not found", 404);
-    }
-
-    if (nextStatus === DeliveryTripStatus.COMPLETED) {
-      if (!challengeCode || typeof challengeCode !== "string" || challengeCode.trim() === "") {
-        return apiError(
-          "VALIDATION_ERROR",
-          "Customer 6-digit delivery OTP code is required to complete delivery",
-          400
-        );
-      }
-      if (order.deliveryOtp && challengeCode.trim() !== order.deliveryOtp) {
-        return apiError("VALIDATION_ERROR", "Invalid customer delivery OTP code", 400);
-      }
-    }
-
-    await RiderRepository.updateMilestone({
-      assignmentId,
-      orderId,
-      riderId,
-      nextStatus: nextStatus as DeliveryTripStatus,
-    });
-
-    return apiSuccess({ success: true, status: nextStatus });
-  } catch (err: any) {
-    return apiError("INTERNAL_ERROR", err.message || "Failed to update milestone", 500);
+export const POST = route(async (req, _ctx, requestId) => {
+  const auth = await requireAuth(req);
+  const rider = await requireRiderProfile(auth);
+  const body = await parseBody(req, RiderMilestoneRequestSchema);
+  if (body.nextStatus === DeliveryTripStatus.COMPLETED || body.challengeCode) {
+    await enforceRateLimit(req, "otpAttempt", rider.id);
   }
-}
+  if (body.nextStatus === DeliveryTripStatus.COMPLETED && !body.challengeCode) {
+    throw new DomainError("VALIDATION_ERROR", "Ask the customer for their delivery OTP to complete this order.");
+  }
+
+  const result = await RiderRepository.advanceTrip({
+    assignmentId: body.assignmentId,
+    riderId: rider.id,
+    nextStatus: body.nextStatus as DeliveryTripStatus,
+    challengeCode: body.challengeCode,
+    failureReason: body.failureReason,
+  });
+
+  if (!result.ok) {
+    return apiError(
+      "VALIDATION_ERROR",
+      result.attemptsRemaining > 0
+        ? `Incorrect OTP. ${result.attemptsRemaining} attempt(s) left.`
+        : "Incorrect OTP. This delivery is now locked; contact support.",
+      400,
+      { attemptsRemaining: result.attemptsRemaining },
+      { requestId }
+    );
+  }
+  return apiSuccess({ success: true, status: result.status, fulfillmentState: result.orderState }, 200, { requestId });
+});

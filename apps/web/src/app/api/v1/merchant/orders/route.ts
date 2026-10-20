@@ -1,24 +1,45 @@
-import { NextRequest } from "next/server";
-import { FulfillmentState } from "@startup/contracts";
-import { OrderRepository, SEED_IDS } from "@startup/database";
-import { apiError, apiSuccess } from "@/server/api-response";
-import { getAuthenticatedActor } from "@/server/auth-guard";
+import { z } from "zod";
+import { FulfillmentState, UserRole } from "@startup/contracts";
+import { DomainError } from "@startup/core";
+import { OrderRepository, RestaurantRepository } from "@startup/database";
+import { apiSuccess } from "@/server/api-response";
+import { requireAuth, requireRestaurantAccess } from "@/server/auth-guard";
+import { shapeOrderForViewer } from "@/server/order-access";
+import { parseQuery, route } from "@/server/route";
 
-export async function GET(req: NextRequest) {
-  try {
-    const actor = await getAuthenticatedActor(req);
-    if (!actor || (actor.role !== "MERCHANT_STAFF" && actor.role !== "ADMIN")) {
-      return apiError("FORBIDDEN", "Merchant staff or admin access required", 403);
-    }
+const QuerySchema = z.object({
+  restaurantId: z.string().uuid().optional(),
+  scope: z.enum(["active", "all"]).default("active"),
+});
 
-    const { searchParams } = new URL(req.url);
-    const restaurantId = searchParams.get("restaurantId") || SEED_IDS.restaurant1Id;
+const ACTIVE_STATES = [
+  FulfillmentState.AWAITING_MERCHANT,
+  FulfillmentState.ACCEPTED,
+  FulfillmentState.PREPARING,
+  FulfillmentState.READY_FOR_PICKUP,
+];
 
-    const orders = await OrderRepository.listByRestaurant(restaurantId);
-    // Strip deliveryOtp from merchant view
-    const sanitizedOrders = orders.map(({ deliveryOtp, ...o }) => o);
-    return apiSuccess(sanitizedOrders);
-  } catch (err: any) {
-    return apiError("INTERNAL_ERROR", err.message || "Failed to fetch merchant orders", 500);
+export const GET = route(async (req, _ctx, requestId) => {
+  const auth = await requireAuth(req, [UserRole.MERCHANT_STAFF, UserRole.ADMIN]);
+  const query = parseQuery(req, QuerySchema);
+
+  let restaurantId = query.restaurantId;
+  if (!restaurantId) {
+    // Default to the staff member's first outlet
+    const memberships = await RestaurantRepository.listForMerchantUser(auth.user.id);
+    restaurantId = memberships[0]?.id;
+    if (!restaurantId) throw new DomainError("NOT_FOUND", "No restaurant is linked to your account");
   }
-}
+  await requireRestaurantAccess(auth, restaurantId);
+
+  const orders = await OrderRepository.listByRestaurant(
+    restaurantId,
+    query.scope === "active" ? ACTIVE_STATES : undefined,
+    { sinceHours: query.scope === "active" ? 12 : 48 }
+  );
+  return apiSuccess(
+    orders.map((o) => shapeOrderForViewer(o, "MERCHANT")),
+    200,
+    { requestId }
+  );
+});

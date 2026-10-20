@@ -1,67 +1,54 @@
-import { NextRequest } from "next/server";
-import { UserRole } from "@startup/contracts";
-import { OrderRepository, RiderRepository, SEED_IDS, deliveryOffers, getDb } from "@startup/database";
-import { apiError, apiSuccess } from "@/server/api-response";
-import { getAuthenticatedActor, getOrCreateDbUser } from "@/server/auth-guard";
-import { desc, eq } from "drizzle-orm";
+import { OrderRepository, RiderRepository } from "@startup/database";
+import { apiSuccess } from "@/server/api-response";
+import { requireAuth, requireRiderProfile } from "@/server/auth-guard";
+import { shapeOrderForViewer } from "@/server/order-access";
+import { orderGeo } from "@/server/order-geo";
+import { route } from "@/server/route";
 
-export async function GET(req: NextRequest) {
-  try {
-    const actor = await getAuthenticatedActor(req);
-    if (!actor) {
-      return apiError("UNAUTHORIZED", "Authentication required", 401);
-    }
-    if (actor.role !== UserRole.RIDER && actor.role !== UserRole.ADMIN) {
-      return apiError("FORBIDDEN", "Forbidden: Rider role required", 403);
-    }
+export const GET = route(async (req, _ctx, requestId) => {
+  const auth = await requireAuth(req);
+  const rider = await requireRiderProfile(auth);
+  const profile = {
+    id: rider.id,
+    name: rider.name,
+    isOnline: rider.isOnline,
+    lastPingAt: rider.lastPingAt?.toISOString(),
+  };
 
-    const user = await getOrCreateDbUser(actor);
-    let rider = await RiderRepository.findByUserId(user.id);
-    if (!rider && actor.role === UserRole.ADMIN) {
-      rider = await RiderRepository.findById(SEED_IDS.riderId);
-    }
-    if (!rider) {
-      return apiError("NOT_FOUND", "Rider profile not found", 404);
-    }
-    const riderId = rider.id;
-
-    // 1. Check active assigned trip
-    const activeTrip = await RiderRepository.getActiveTripForRider(riderId);
-    if (activeTrip) {
-      const order = await OrderRepository.findById(activeTrip.orderId);
-      // Strip deliveryOtp: rider must NOT see customer's delivery OTP code!
-      const sanitizedOrder = order ? (({ deliveryOtp, ...o }) => o)(order) : null;
-      return apiSuccess({
+  const activeTrip = await RiderRepository.getActiveTripForRider(rider.id);
+  if (activeTrip) {
+    const order = await OrderRepository.findById(activeTrip.orderId);
+    return apiSuccess(
+      {
+        rider: profile,
         hasActiveTrip: true,
-        assignment: activeTrip,
-        order: sanitizedOrder,
-      });
-    }
-
-    // 2. Check pending offers
-    const db = getDb();
-    const offers = await db
-      .select()
-      .from(deliveryOffers)
-      .where(eq(deliveryOffers.riderId, riderId))
-      .orderBy(desc(deliveryOffers.createdAt))
-      .limit(1);
-
-    const pendingOffer = offers[0] && offers[0].status === "OFFERED" ? offers[0] : null;
-
-    let offerOrder = null;
-    if (pendingOffer) {
-      const rawOrder = await OrderRepository.findById(pendingOffer.orderId);
-      // Strip deliveryOtp from offer preview
-      offerOrder = rawOrder ? (({ deliveryOtp, ...o }) => o)(rawOrder) : null;
-    }
-
-    return apiSuccess({
-      hasActiveTrip: false,
-      pendingOffer,
-      offerOrder,
-    });
-  } catch (err: any) {
-    return apiError("INTERNAL_ERROR", err.message || "Failed to fetch rider trip", 500);
+        assignment: {
+          id: activeTrip.id,
+          status: activeTrip.status,
+          assignedAt: activeTrip.assignedAt.toISOString(),
+          otpFailedAttempts: activeTrip.otpFailedAttempts,
+          arrivedDropoffAt: activeTrip.arrivedDropoffAt?.toISOString(),
+        },
+        order: order ? shapeOrderForViewer(order, "RIDER") : null,
+        pickupLocation: order ? (await orderGeo(order)).restaurantLocation : null,
+      },
+      200,
+      { requestId }
+    );
   }
-}
+
+  const pendingOffer = await RiderRepository.getPendingOfferForRider(rider.id);
+  let offerOrder = null;
+  let pickupLocation = null;
+  if (pendingOffer) {
+    const order = await OrderRepository.findById(pendingOffer.orderId);
+    if (order) {
+      // Before accepting, a rider sees the job, not the customer's identity
+      const shaped = shapeOrderForViewer(order, "RIDER");
+      offerOrder = { ...shaped, deliveryAddress: { ...shaped.deliveryAddress, contactPhone: undefined, building: "" } };
+      pickupLocation = (await orderGeo(order)).restaurantLocation;
+    }
+  }
+
+  return apiSuccess({ rider: profile, hasActiveTrip: false, pendingOffer, offerOrder, pickupLocation }, 200, { requestId });
+});

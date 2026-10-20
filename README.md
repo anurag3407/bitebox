@@ -1,3 +1,22 @@
+# ZomatoFresh — Food Delivery PWA
+
+## Quickstart (local)
+
+```bash
+pnpm install
+createdb startup_dev && createdb startup_test          # PostgreSQL 15+
+cp .env.example .env                                    # placeholders = dev mode (demo sign-in, simulated payments)
+DATABASE_URL=postgresql://localhost:5432/startup_dev pnpm db:migrate && pnpm db:seed
+pnpm dev:web          # http://localhost:3000  → Sign in → pick a persona
+pnpm dev:worker       # timeouts, dispatch, refunds, notifications
+pnpm test             # runs against startup_test (migrated + seeded automatically)
+```
+
+Production: fill real secrets in `.env` with `APP_ENV=production`, then `infra/scripts/deploy.sh`.
+Review findings, architecture and remaining gaps: [docs/implementation/production-readiness.md](docs/implementation/production-readiness.md).
+
+---
+
 # Enterprise Food Delivery Platform: System Design & Architecture Handbook
 
 > Production-Grade System Architecture, Low-Level Design (LLD), High-Level Design (HLD), Case Studies (Swiggy & Zomato), and Complete Web-First Developer Building Guide.

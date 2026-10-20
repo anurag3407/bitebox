@@ -5,6 +5,7 @@ export const LedgerAccountType = {
   PLATFORM_REVENUE: "PLATFORM_REVENUE",
   TAX_PAYABLE: "TAX_PAYABLE",
   REFUND_CLEARING: "REFUND_CLEARING",
+  DISCOUNT_EXPENSE: "DISCOUNT_EXPENSE",
 } as const;
 export type LedgerAccountType = (typeof LedgerAccountType)[keyof typeof LedgerAccountType];
 
@@ -46,7 +47,11 @@ export class LedgerEngine {
 
   /**
    * Builds balanced ledger entries for a captured order.
-   * Assumes platform takes commission (e.g. 15%) on food subtotal.
+   *
+   * Debits:  gateway clearing (cash received) + platform-funded discount expense.
+   * Credits: merchant (food net of commission + packaging), platform (commission + platform fee),
+   *          rider (delivery fee + surge + tip) and GST payable.
+   * Because payable = gross charges - discount, both sides always agree.
    */
   static buildOrderCaptureEntries(input: {
     payablePaise: number;
@@ -55,52 +60,59 @@ export class LedgerEngine {
     platformFeePaise: number;
     packagingPaise: number;
     taxPaise: number;
+    discountPaise?: number;
+    surgePaise?: number;
+    tipPaise?: number;
     commissionRateBasisPoints?: number; // e.g. 1500 = 15%
   }): LedgerEntry[] {
     const commissionBp = input.commissionRateBasisPoints ?? 1500;
-    const platformCommissionFromFood = Math.round((input.subtotalPaise * commissionBp) / 10000);
-    const merchantNetFood = input.subtotalPaise - platformCommissionFromFood;
+    const discountPaise = input.discountPaise ?? 0;
+    const surgePaise = input.surgePaise ?? 0;
+    const tipPaise = input.tipPaise ?? 0;
 
-    // Platform revenue = food commission + packaging + platform fee
-    const totalPlatformRevenue = platformCommissionFromFood + input.packagingPaise + input.platformFeePaise;
+    const platformCommissionFromFood = Math.round((input.subtotalPaise * commissionBp) / 10000);
+    const merchantPayable = input.subtotalPaise - platformCommissionFromFood + input.packagingPaise;
+    const platformRevenue = platformCommissionFromFood + input.platformFeePaise;
+    const riderPayable = input.deliveryFeePaise + surgePaise + tipPaise;
 
     const entries: LedgerEntry[] = [
-      // 1. Gateway owes platform gross customer amount
       {
         account: LedgerAccountType.GATEWAY_CLEARING,
         debitPaise: input.payablePaise,
         creditPaise: 0,
         description: "Customer capture received via Razorpay",
       },
-      // 2. Net food amount payable to merchant
+      {
+        account: LedgerAccountType.DISCOUNT_EXPENSE,
+        debitPaise: discountPaise,
+        creditPaise: 0,
+        description: "Platform-funded coupon discount",
+      },
       {
         account: LedgerAccountType.MERCHANT_PAYABLE,
         debitPaise: 0,
-        creditPaise: merchantNetFood,
-        description: "Merchant food revenue payable",
+        creditPaise: merchantPayable,
+        description: "Merchant food revenue (net of commission) and packaging",
       },
-      // 3. Platform revenue (commission + fee + packaging)
       {
         account: LedgerAccountType.PLATFORM_REVENUE,
         debitPaise: 0,
-        creditPaise: totalPlatformRevenue,
-        description: "Platform commission, fee, and packaging",
+        creditPaise: platformRevenue,
+        description: "Platform commission and platform fee",
       },
-      // 4. Delivery fee payable to rider
       {
         account: LedgerAccountType.RIDER_PAYABLE,
         debitPaise: 0,
-        creditPaise: input.deliveryFeePaise,
-        description: "Rider delivery earnings payable",
+        creditPaise: riderPayable,
+        description: "Rider delivery earnings, surge and tip",
       },
-      // 5. Tax obligations payable to government
       {
         account: LedgerAccountType.TAX_PAYABLE,
         debitPaise: 0,
         creditPaise: input.taxPaise,
-        description: "GST tax payable",
+        description: "GST payable",
       },
-    ];
+    ].filter((entry) => entry.debitPaise > 0 || entry.creditPaise > 0);
 
     if (!LedgerEngine.validateBalanced(entries)) {
       throw new Error("Generated order capture ledger entries are not balanced!");

@@ -1,146 +1,174 @@
-import { NextRequest } from "next/server";
-import { CreateCheckoutRequestSchema } from "@startup/contracts";
-import { OrderFundingGuard, generateOrderNumber, generateVerificationOtp } from "@startup/core";
+import { createHash } from "node:crypto";
+import { CheckoutResponse, CreateCheckoutRequestSchema, QuoteBreakdown, QuoteLineBreakdown } from "@startup/contracts";
+import { DomainError, ServiceabilityPolicy, generateOrderNumber, generateVerificationOtp } from "@startup/core";
 import {
   AddressRepository,
+  CheckoutResult,
   OrderRepository,
+  RestaurantRepository,
+  evaluateAvailability,
   getDb,
   quotes,
 } from "@startup/database";
-import { RazorpayAdapter } from "@startup/integrations";
-import { getClientEnv } from "@startup/config";
-import { apiError, apiSuccess } from "@/server/api-response";
-import { getAuthenticatedActor, getOrCreateDbUser } from "@/server/auth-guard";
+import { ProviderUnavailableError, RazorpayAdapter } from "@startup/integrations";
+import { getRazorpayKeyId } from "@startup/config";
 import { eq } from "drizzle-orm";
+import { apiSuccess } from "@/server/api-response";
+import { requireAuth } from "@/server/auth-guard";
+import { enforceRateLimit } from "@/server/rate-limit";
+import { parseBody, route } from "@/server/route";
 
-export async function POST(req: NextRequest) {
+// A quote priced for map coordinates may be checked out to a saved address this close by
+const MAX_ADDRESS_DRIFT_METERS = 300;
+
+function toResponse(result: CheckoutResult, simulatedPayment: boolean): CheckoutResponse {
+  return {
+    orderId: result.orderId,
+    orderNumber: result.orderNumber,
+    paymentAttemptId: result.paymentAttemptId,
+    razorpayOrderId: result.razorpayOrderId,
+    razorpayKeyId: getRazorpayKeyId(),
+    amountPaise: result.payablePaise,
+    currency: "INR",
+    isDuplicate: result.isDuplicate,
+    simulatedPayment,
+  };
+}
+
+export const POST = route(async (req, _ctx, requestId) => {
+  const auth = await requireAuth(req);
+  await enforceRateLimit(req, "checkout", auth.user.id);
+  const { quoteId, deliveryAddressId, instructions, idempotencyKey } = await parseBody(req, CreateCheckoutRequestSchema);
+  const razorpay = new RazorpayAdapter();
+
+  const requestHash = createHash("sha256")
+    .update(JSON.stringify({ quoteId, deliveryAddressId, instructions: instructions ?? "" }))
+    .digest("hex");
+
+  // 1. Replayed request (double tap, network retry): answer without touching the gateway
+  const replay = await OrderRepository.findCompletedCheckout(auth.user.id, idempotencyKey, requestHash);
+  if (replay) return apiSuccess(toResponse(replay, razorpay.isMock), 200, { requestId });
+
+  // 2. The quote is the price contract
+  const [quote] = await getDb().select().from(quotes).where(eq(quotes.id, quoteId)).limit(1);
+  if (!quote || quote.customerId !== auth.user.id) throw new DomainError("NOT_FOUND", "Quote not found");
+
+  // 3. Address must be the customer's and match what was priced
+  const address = await AddressRepository.findById(deliveryAddressId);
+  if (!address || address.userId !== auth.user.id || address.isDeleted) {
+    throw new DomainError("NOT_FOUND", "Delivery address not found");
+  }
+  const pricedForOtherAddress = quote.deliveryAddressId
+    ? quote.deliveryAddressId !== deliveryAddressId
+    : quote.destinationLatitude === null ||
+      ServiceabilityPolicy.calculateDistanceMeters(
+        { latitude: quote.destinationLatitude, longitude: quote.destinationLongitude! },
+        { latitude: address.latitude, longitude: address.longitude }
+      ) > MAX_ADDRESS_DRIFT_METERS;
+  if (pricedForOtherAddress) {
+    throw new DomainError("QUOTE_EXPIRED", "Your delivery address changed. Please review the updated bill.");
+  }
+
+  // 4. One order per quote: a retry after a failed/cancelled payment window reuses the pending order
+  const existingOrder = await OrderRepository.findOrderByQuote(quoteId);
+  if (existingOrder) {
+    if (existingOrder.paymentStatus !== "PENDING") {
+      throw new DomainError("STATE_CONFLICT", "This order has already been paid.");
+    }
+    if (existingOrder.fulfillmentState !== "PENDING_PAYMENT") {
+      throw new DomainError("QUOTE_EXPIRED", "This checkout has expired. Please review your cart and try again.");
+    }
+    if (existingOrder.razorpayOrderId && existingOrder.paymentAttemptId) {
+      return apiSuccess(
+        toResponse(
+          {
+            orderId: existingOrder.id,
+            orderNumber: existingOrder.orderNumber,
+            paymentAttemptId: existingOrder.paymentAttemptId,
+            razorpayOrderId: existingOrder.razorpayOrderId,
+            payablePaise: existingOrder.payablePaise,
+            isDuplicate: true,
+          },
+          razorpay.isMock
+        ),
+        200,
+        { requestId }
+      );
+    }
+  }
+
+  if (quote.expiresAt.getTime() < Date.now()) {
+    throw new DomainError("QUOTE_EXPIRED", "Prices may have changed. Please review the updated bill.");
+  }
+
+  // 5. Restaurant may have closed or paused since the quote
+  const restaurant = await RestaurantRepository.findById(quote.restaurantId);
+  if (!restaurant || !evaluateAvailability(restaurant).isAcceptingOrders) {
+    throw new DomainError("SERVICEABILITY_ERROR", "This restaurant has stopped accepting orders. Please try again later.");
+  }
+
+  const breakdown = quote.breakdownJson as QuoteBreakdown;
+  const items = quote.itemsJson as QuoteLineBreakdown[];
+
+  // 6. Gateway order first (external, cannot join our transaction). If the DB write
+  // below fails the provider order is simply never paid and expires.
+  let razorpayOrderId: string;
+  let orderNumber = generateOrderNumber();
   try {
-    const actor = await getAuthenticatedActor(req);
-    if (!actor) {
-      return apiError("UNAUTHENTICATED", "Authentication required to checkout", 401);
-    }
-
-    const body = await req.json();
-    const parsed = CreateCheckoutRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      return apiError("VALIDATION_ERROR", "Invalid checkout request", 400, parsed.error.format());
-    }
-
-    const { quoteId, deliveryAddressId, instructions, idempotencyKey } = parsed.data;
-
-    const user = await getOrCreateDbUser(actor);
-
-    // 1. Fetch and validate quote
-    const db = getDb();
-    const [quote] = await db.select().from(quotes).where(eq(quotes.id, quoteId)).limit(1);
-
-    if (!quote) {
-      return apiError("NOT_FOUND", "Quote not found", 404);
-    }
-
-    if (quote.customerId !== user.id) {
-      return apiError("FORBIDDEN", "You do not have permission to checkout this quote", 403);
-    }
-
-    if (quote.expiresAt.getTime() < Date.now()) {
-      return apiError("QUOTE_EXPIRED", "Your quote has expired. Please refresh prices before placing order.", 409);
-    }
-
-    // 2. Validate address ownership
-    const address = await AddressRepository.findById(deliveryAddressId);
-    if (!address) {
-      return apiError("NOT_FOUND", "Delivery address not found", 404);
-    }
-
-    if (address.userId !== user.id) {
-      return apiError("FORBIDDEN", "Delivery address does not belong to you", 403);
-    }
-
-    const breakdown: any = quote.breakdownJson;
-    const items: any = quote.itemsJson;
-    const requestHash = `${quoteId}_${deliveryAddressId}_${breakdown.payablePaise}`;
-
-    // 3. Order-level funding guard: check if an order already exists for this quote
-    const existingOrder = await OrderRepository.findOrderByQuote(quoteId);
-    if (existingOrder) {
-      const guardResult = OrderFundingGuard.evaluateCanCreateAttempt({
-        orderFulfillmentState: existingOrder.fulfillmentState,
-        orderPaymentStatus: existingOrder.paymentStatus as any,
-        existingAttemptId: existingOrder.paymentAttemptId,
-        existingAttemptStatus: existingOrder.attemptStatus as any,
-        capturedAmountPaise: existingOrder.paymentStatus === "CAPTURED" ? existingOrder.payablePaise : 0,
-        orderPayablePaise: existingOrder.payablePaise,
-      });
-
-      if (guardResult.action === "REJECT_ALREADY_PAID") {
-        return apiError("STATE_CONFLICT", "This quote has already been funded and paid", 409);
-      }
-
-      if (guardResult.action === "REJECT_TERMINAL") {
-        return apiError("STATE_CONFLICT", "The order for this quote has been cancelled", 409);
-      }
-
-      if (guardResult.action === "REUSE_EXISTING" && existingOrder.razorpayOrderId) {
-        const clientEnv = getClientEnv();
-        return apiSuccess({
-          orderId: existingOrder.id,
-          orderNumber: existingOrder.orderNumber,
-          paymentAttemptId: existingOrder.paymentAttemptId,
-          razorpayOrderId: existingOrder.razorpayOrderId,
-          razorpayKeyId: clientEnv.NEXT_PUBLIC_RAZORPAY_KEY_ID,
-          amountPaise: existingOrder.payablePaise,
-          currency: "INR",
-          isDuplicate: true,
-        }, 200);
-      }
-    }
-
-    // 4. Create Razorpay order
-    const razorpayAdapter = new RazorpayAdapter();
-    const orderNumber = generateOrderNumber();
-    const rzpOrder = await razorpayAdapter.createOrder({
+    const rzpOrder = await razorpay.createOrder({
       amountPaise: breakdown.payablePaise,
       currency: "INR",
       receipt: orderNumber,
-      notes: { quoteId, customerId: user.id },
+      notes: { quoteId, customerId: auth.user.id },
     });
-
-    // 5. Create Order Transactionally with Idempotency
-    const deliveryOtp = generateVerificationOtp();
-    const pickupOtp = generateVerificationOtp();
-
-    const orderResult = await OrderRepository.createWithIdempotency({
-      idempotencyKey,
-      principalId: user.id,
-      requestHash,
-      customerId: user.id,
-      restaurantId: quote.restaurantId,
-      deliveryAddressId,
-      orderNumber,
-      items,
-      breakdown,
-      payablePaise: breakdown.payablePaise,
-      deliveryOtp,
-      pickupOtp,
-      instructions,
-      estimatedDeliveryMinutes: quote.estimatedMaxMinutes,
-      razorpayOrderId: rzpOrder.id,
-      quoteId,
-    });
-
-    const clientEnv = getClientEnv();
-
-    return apiSuccess({
-      orderId: orderResult.orderId,
-      orderNumber: orderResult.orderNumber,
-      paymentAttemptId: orderResult.paymentAttemptId,
-      razorpayOrderId: orderResult.razorpayOrderId,
-      razorpayKeyId: clientEnv.NEXT_PUBLIC_RAZORPAY_KEY_ID,
-      amountPaise: breakdown.payablePaise,
-      currency: "INR",
-      isDuplicate: orderResult.isDuplicate,
-    }, 201);
-  } catch (err: any) {
-    return apiError("INTERNAL_ERROR", err.message || "Failed to create checkout", 500);
+    razorpayOrderId = rzpOrder.id;
+  } catch (err) {
+    if (err instanceof ProviderUnavailableError) {
+      throw new DomainError("PAYMENT_FAILED", "Payments are temporarily unavailable. Please try again in a minute.", {
+        httpStatus: 503,
+      });
+    }
+    throw err;
   }
-}
+
+  // 7. Persist atomically; retry the rare order-number collision with a fresh number
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const result = await OrderRepository.createWithIdempotency({
+        idempotencyKey,
+        principalId: auth.user.id,
+        requestHash,
+        customerId: auth.user.id,
+        restaurantId: quote.restaurantId,
+        deliveryAddressId,
+        orderNumber,
+        items,
+        breakdown,
+        payablePaise: breakdown.payablePaise,
+        deliveryOtp: generateVerificationOtp(4),
+        pickupOtp: generateVerificationOtp(4),
+        instructions,
+        estimatedDeliveryMinutes: quote.estimatedMaxMinutes,
+        razorpayOrderId,
+        quoteId,
+        couponCode: quote.couponCode ?? undefined,
+        deliveryAddressSnapshot: {
+          label: address.label,
+          building: address.building,
+          street: address.street,
+          landmark: address.landmark,
+          latitude: address.latitude,
+          longitude: address.longitude,
+          contactPhone: address.contactPhone ?? auth.user.phone ?? undefined,
+        },
+      });
+      return apiSuccess(toResponse(result, razorpay.isMock), result.isDuplicate ? 200 : 201, { requestId });
+    } catch (err) {
+      if (err instanceof DomainError && err.message === "ORDER_NUMBER_COLLISION" && attempt < 3) {
+        orderNumber = generateOrderNumber();
+        continue;
+      }
+      throw err;
+    }
+  }
+});

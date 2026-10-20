@@ -1,87 +1,57 @@
-import { NextRequest } from "next/server";
 import { UpdateProfileRequestSchema, UserRole } from "@startup/contracts";
-import { RiderRepository, appUsers, getDb } from "@startup/database";
+import { DomainError } from "@startup/core";
+import { RestaurantRepository, RiderRepository, appUsers, getDb } from "@startup/database";
 import { eq } from "drizzle-orm";
-import { apiError, apiSuccess } from "@/server/api-response";
-import { getAuthenticatedActor, getOrCreateDbUser } from "@/server/auth-guard";
+import { apiSuccess } from "@/server/api-response";
+import { requireAuth } from "@/server/auth-guard";
+import { parseBody, route } from "@/server/route";
 
-export async function GET(req: NextRequest) {
-  try {
-    const actor = await getAuthenticatedActor(req);
-    if (!actor) {
-      return apiError("UNAUTHORIZED", "Authentication required", 401);
+export const GET = route(async (req, _ctx, requestId) => {
+  const { user, role } = await requireAuth(req);
+
+  let riderInfo = null;
+  if (role === UserRole.RIDER) {
+    const rider = await RiderRepository.findByUserId(user.id);
+    if (rider) {
+      riderInfo = {
+        id: rider.id,
+        isOnline: rider.isOnline,
+        isApproved: rider.isApproved,
+        vehicleType: rider.vehicleType,
+      };
     }
+  }
+  const restaurants = role === UserRole.MERCHANT_STAFF ? await RestaurantRepository.listForMerchantUser(user.id) : [];
 
-    const user = await getOrCreateDbUser(actor);
-
-    let riderInfo = null;
-    if (user.role === UserRole.RIDER || user.role === UserRole.ADMIN) {
-      const rider = await RiderRepository.findByUserId(user.id);
-      if (rider) {
-        riderInfo = {
-          id: rider.id,
-          isOnline: rider.isOnline,
-          vehicleType: rider.vehicleType,
-          currentLatitude: rider.currentLatitude,
-          currentLongitude: rider.currentLongitude,
-        };
-      }
-    }
-
-    return apiSuccess({
+  return apiSuccess(
+    {
       id: user.id,
-      clerkUserId: user.clerkUserId,
       name: user.name,
       email: user.email,
       phone: user.phone,
-      role: user.role,
+      role,
       rider: riderInfo,
-    });
-  } catch (err: any) {
-    return apiError("INTERNAL_ERROR", err.message || "Failed to fetch user profile", 500);
-  }
-}
+      restaurants,
+    },
+    200,
+    { requestId }
+  );
+});
 
-export async function PATCH(req: NextRequest) {
-  try {
-    const actor = await getAuthenticatedActor(req);
-    if (!actor) {
-      return apiError("UNAUTHORIZED", "Authentication required", 401);
-    }
+export const PATCH = route(async (req, _ctx, requestId) => {
+  const { user } = await requireAuth(req);
+  const body = await parseBody(req, UpdateProfileRequestSchema);
 
-    const body = await req.json();
-    const parsed = UpdateProfileRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      return apiError("VALIDATION_ERROR", "Invalid profile update parameters", 400, parsed.error.format());
-    }
+  const updates: { name?: string; phone?: string; updatedAt: Date } = { updatedAt: new Date() };
+  if (body.name !== undefined) updates.name = body.name;
+  if (body.phone !== undefined) updates.phone = body.phone;
 
-    const user = await getOrCreateDbUser(actor);
-    const updates: { name?: string; phone?: string; updatedAt: Date } = {
-      updatedAt: new Date(),
-    };
-    if (parsed.data.name !== undefined) updates.name = parsed.data.name;
-    if (parsed.data.phone !== undefined) updates.phone = parsed.data.phone;
+  const [updated] = await getDb().update(appUsers).set(updates).where(eq(appUsers.id, user.id)).returning();
+  if (!updated) throw new DomainError("NOT_FOUND", "User not found");
 
-    const db = getDb();
-    const [updated] = await db
-      .update(appUsers)
-      .set(updates)
-      .where(eq(appUsers.id, user.id))
-      .returning();
-
-    if (!updated) {
-      return apiError("NOT_FOUND", "User not found", 404);
-    }
-
-    return apiSuccess({
-      id: updated.id,
-      clerkUserId: updated.clerkUserId,
-      name: updated.name,
-      email: updated.email,
-      phone: updated.phone,
-      role: updated.role,
-    });
-  } catch (err: any) {
-    return apiError("INTERNAL_ERROR", err.message || "Failed to update profile", 500);
-  }
-}
+  return apiSuccess(
+    { id: updated.id, name: updated.name, email: updated.email, phone: updated.phone, role: updated.role },
+    200,
+    { requestId }
+  );
+});

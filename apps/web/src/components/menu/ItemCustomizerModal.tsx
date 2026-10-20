@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
+import { MAX_LINE_QUANTITY } from "@/features/cart/cart-store";
 import { X, Check } from "lucide-react";
 import { MenuItemDto, ModifierGroupDto, ModifierOptionDto } from "@startup/contracts";
 
@@ -24,9 +25,9 @@ export function ItemCustomizerModal({
   onClose,
   onConfirm,
 }: ItemCustomizerModalProps) {
-  // Selected variant (default to first variant if any exist)
+  // Default to the first portion that can actually be ordered
   const [selectedVariantId, setSelectedVariantId] = useState<string | undefined>(
-    item.variants[0]?.id
+    item.variants.find((v) => v.isAvailable)?.id
   );
 
   // Selected options map: groupId -> Set of option IDs
@@ -34,9 +35,10 @@ export function ItemCustomizerModal({
     const initial: Record<string, Set<string>> = {};
     for (const group of item.modifierGroups) {
       initial[group.id] = new Set<string>();
-      // Auto-select first option if required and minSelect === 1
-      if (group.isRequired && group.minSelect === 1 && group.options[0]) {
-        initial[group.id]!.add(group.options[0].id);
+      // Pre-select the first available option of single-choice required groups
+      const firstAvailable = group.options.find((o) => o.isAvailable);
+      if (group.isRequired && group.maxSelect === 1 && firstAvailable) {
+        initial[group.id]!.add(firstAvailable.id);
       }
     }
     return initial;
@@ -44,6 +46,13 @@ export function ItemCustomizerModal({
 
   const [quantity, setQuantity] = useState(1);
   const [instructions, setInstructions] = useState("");
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
@@ -73,11 +82,17 @@ export function ItemCustomizerModal({
   let canConfirm = true;
   let validationMessage = "";
 
+  if (item.variants.length > 0 && !currentVariant) {
+    canConfirm = false;
+    validationMessage = "Choose a portion size";
+  }
   for (const group of item.modifierGroups) {
     const count = selectedOptionsMap[group.id]?.size || 0;
-    if (group.isRequired && count < group.minSelect) {
+    const min = group.isRequired ? Math.max(1, group.minSelect) : group.minSelect;
+    // Same rule as the server: optional groups enforce their minimum once started
+    if ((group.isRequired || count > 0) && count < min) {
       canConfirm = false;
-      validationMessage = `Please select at least ${group.minSelect} option in "${group.name}"`;
+      validationMessage = `Select at least ${min} in "${group.name}"`;
       break;
     }
   }
@@ -120,8 +135,11 @@ export function ItemCustomizerModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200">
-      <div className="relative w-full max-w-lg bg-white rounded-3xl shadow-2xl overflow-hidden max-h-[90vh] flex flex-col">
+    <div
+      className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center sm:p-4 bg-black/60"
+      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div role="dialog" aria-modal="true" aria-label={`Customise ${item.name}`} className="relative w-full max-w-lg bg-white rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden max-h-[90vh] flex flex-col pb-[env(safe-area-inset-bottom)]">
         {/* Header */}
         <div className="p-5 border-b border-border flex items-center justify-between">
           <div>
@@ -159,7 +177,7 @@ export function ItemCustomizerModal({
                       selectedVariantId === v.id
                         ? "border-brand bg-brand-light/40"
                         : "border-border hover:bg-surface-muted"
-                    }`}
+                    } ${!v.isAvailable ? "opacity-50 pointer-events-none" : ""}`}
                   >
                     <div className="flex items-center gap-2.5">
                       <input
@@ -169,7 +187,10 @@ export function ItemCustomizerModal({
                         onChange={() => setSelectedVariantId(v.id)}
                         className="text-brand focus:ring-brand"
                       />
-                      <span className="text-xs font-semibold text-text-primary">{v.name}</span>
+                      <span className="text-xs font-semibold text-text-primary">
+                        {v.name}
+                        {!v.isAvailable && " (sold out)"}
+                      </span>
                     </div>
                     <span className="text-xs font-bold text-text-primary">
                       ₹{v.pricePaise / 100}
@@ -265,7 +286,7 @@ export function ItemCustomizerModal({
             </button>
             <span className="px-2 text-xs font-black text-text-primary">{quantity}</span>
             <button
-              onClick={() => setQuantity(Math.min(10, quantity + 1))}
+              onClick={() => setQuantity(Math.min(MAX_LINE_QUANTITY, quantity + 1))}
               className="px-3 py-2 text-text-secondary hover:text-brand font-bold text-sm"
             >
               +

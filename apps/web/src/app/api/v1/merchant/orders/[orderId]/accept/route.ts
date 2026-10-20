@@ -1,36 +1,27 @@
-import { NextRequest } from "next/server";
-import { FulfillmentState, MerchantAcceptOrderRequestSchema } from "@startup/contracts";
+import { MerchantAcceptOrderRequestSchema, FulfillmentState } from "@startup/contracts";
+import { DomainError } from "@startup/core";
 import { OrderRepository } from "@startup/database";
-import { apiError, apiSuccess } from "@/server/api-response";
-import { getAuthenticatedActor } from "@/server/auth-guard";
+import { MapboxAdapter } from "@startup/integrations";
+import { apiSuccess } from "@/server/api-response";
+import { authorizeMerchantOrderAction } from "@/server/merchant-order";
+import { orderGeo } from "@/server/order-geo";
+import { parseBody, route } from "@/server/route";
 
-export async function POST(
-  req: NextRequest,
-  { params }: { params: Promise<{ orderId: string }> }
-) {
-  try {
-    const actor = await getAuthenticatedActor(req);
-    if (!actor || (actor.role !== "MERCHANT_STAFF" && actor.role !== "ADMIN")) {
-      return apiError("FORBIDDEN", "Merchant staff or admin access required", 403);
-    }
+export const POST = route<{ orderId: string }>(async (req, { params }, requestId) => {
+  const { auth, orderId } = await authorizeMerchantOrderAction(req, params);
+  const { preparationTimeMinutes } = await parseBody(req, MerchantAcceptOrderRequestSchema);
 
-    const { orderId } = await params;
-    const body = await req.json();
-    const parsed = MerchantAcceptOrderRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      return apiError("VALIDATION_ERROR", "Invalid preparation estimate", 400, parsed.error.format());
-    }
+  const order = await OrderRepository.findById(orderId);
+  if (!order) throw new DomainError("NOT_FOUND", "Order not found");
+  const { restaurantLocation } = await orderGeo(order);
+  const lastMile = await new MapboxAdapter().calculateRoute(restaurantLocation, order.deliveryAddress);
 
-    await OrderRepository.updateFulfillmentState({
-      orderId,
-      fromState: FulfillmentState.AWAITING_MERCHANT,
-      toState: FulfillmentState.ACCEPTED,
-      actorType: "MERCHANT",
-      reason: `Merchant accepted with estimated prep time ${parsed.data.preparationTimeMinutes}m`,
-    });
+  await OrderRepository.acceptByMerchant({
+    orderId,
+    prepTimeMinutes: preparationTimeMinutes,
+    actorId: auth.user.id,
+    lastMileMinutes: Math.ceil(lastMile.durationSeconds / 60),
+  });
 
-    return apiSuccess({ success: true, fulfillmentState: FulfillmentState.ACCEPTED });
-  } catch (err: any) {
-    return apiError("INTERNAL_ERROR", err.message || "Failed to accept order", 500);
-  }
-}
+  return apiSuccess({ success: true, fulfillmentState: FulfillmentState.ACCEPTED }, 200, { requestId });
+});

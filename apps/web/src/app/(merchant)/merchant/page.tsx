@@ -1,313 +1,343 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
-import Link from "next/link";
-import {
-  Store,
-  Clock,
-  CheckCircle2,
-  XCircle,
-  ChefHat,
-  PackageCheck,
-  RefreshCw,
-  AlertTriangle,
-  ArrowLeft,
-  Volume2,
-} from "lucide-react";
-import { FulfillmentState, OrderDetailDto, DEMO_IDS } from "@startup/contracts";
-import { createApiClient } from "@/lib/api-client";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Bell, ChefHat, Clock, KeyRound, Package, Volume2, VolumeX, X } from "lucide-react";
+import { OrderDetailDto } from "@startup/contracts";
+import { PortalHeader, RoleGate } from "@/components/portal/role-gate";
+import { Modal } from "@/components/ui/modal";
+import { EmptyState, Spinner, VegMark } from "@/components/ui/misc";
+import { useToast } from "@/components/ui/toast";
+import { errorMessage, useApi } from "@/lib/api";
+import { playChime, unlockAudio } from "@/lib/alert-sound";
+import { STATE_LABELS, formatRupees, formatTime, timeAgo } from "@/lib/format";
 
-export default function MerchantConsolePage() {
-  const [orders, setOrders] = useState<OrderDetailDto[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [selectedPrepMinutes, setSelectedPrepMinutes] = useState(25);
-  const [isAccepting, setIsAccepting] = useState(true);
+const PREP_OPTIONS = [10, 15, 20, 30, 45];
+const REJECT_REASONS = ["Item(s) out of stock", "Kitchen is too busy", "Closing soon", "Cannot fulfil special request"];
 
-  const fetchOrders = async () => {
-    try {
-      const client = createApiClient();
-      const list = await client.getMerchantOrders(DEMO_IDS.restaurant1Id);
-      setOrders(list);
-    } catch (err) {
-      console.error("Failed to fetch merchant orders:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
+function Countdown({ deadline }: { deadline?: string }) {
+  const [now, setNow] = useState(Date.now());
   useEffect(() => {
-    fetchOrders();
-    const interval = setInterval(fetchOrders, 3000);
-    return () => clearInterval(interval);
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
   }, []);
-
-  const handleAccept = async (orderId: string) => {
-    try {
-      const client = createApiClient();
-      await client.merchantAcceptOrder(orderId, selectedPrepMinutes);
-      await fetchOrders();
-    } catch (err: any) {
-      alert(`Accept failed: ${err.message}`);
-    }
-  };
-
-  const handleReject = async (orderId: string) => {
-    const reason = prompt("Enter reason for rejection (e.g. Kitchen overloaded, item out of stock):");
-    if (!reason) return;
-    try {
-      const client = createApiClient();
-      await client.merchantRejectOrder(orderId, reason);
-      await fetchOrders();
-    } catch (err: any) {
-      alert(`Reject failed: ${err.message}`);
-    }
-  };
-
-  const handleMarkPreparing = async (orderId: string) => {
-    try {
-      const client = createApiClient();
-      await client.merchantMarkPreparing(orderId);
-      await fetchOrders();
-    } catch (err: any) {
-      alert(`Mark preparing failed: ${err.message}`);
-    }
-  };
-
-  const handleMarkReady = async (orderId: string) => {
-    try {
-      const client = createApiClient();
-      await client.merchantMarkReady(orderId);
-      await fetchOrders();
-    } catch (err: any) {
-      alert(`Mark ready failed: ${err.message}`);
-    }
-  };
-
-  const incomingOrders = orders.filter((o) => o.fulfillmentState === FulfillmentState.AWAITING_MERCHANT);
-  const activeOrders = orders.filter(
-    (o) =>
-      o.fulfillmentState === FulfillmentState.ACCEPTED ||
-      o.fulfillmentState === FulfillmentState.PREPARING ||
-      o.fulfillmentState === FulfillmentState.READY_FOR_PICKUP
-  );
-  const completedOrders = orders.filter(
-    (o) =>
-      o.fulfillmentState === FulfillmentState.OUT_FOR_DELIVERY ||
-      o.fulfillmentState === FulfillmentState.DELIVERED
-  );
-
+  if (!deadline) return null;
+  const left = Math.max(0, Math.round((new Date(deadline).getTime() - now) / 1000));
   return (
-    <div className="min-h-screen bg-surface-muted">
-      {/* Top Navigation */}
-      <header className="bg-white border-b border-border sticky top-0 z-30 shadow-xs">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <Link
-              href="/"
-              className="flex items-center gap-1.5 text-xs font-bold text-text-secondary hover:text-brand"
-            >
-              <ArrowLeft className="w-4 h-4" />
-              <span>Back to Marketplace</span>
-            </Link>
+    <span className={`text-xs font-black px-2 py-1 rounded-lg ${left < 30 ? "bg-red-600 text-white animate-pulse" : "bg-amber-100 text-amber-900"}`}>
+      {left > 0 ? `${left}s to accept` : "Expired"}
+    </span>
+  );
+}
 
-            <div className="h-6 w-px bg-border" />
+function OrderCard({ order, restaurantId }: { order: OrderDetailDto; restaurantId: string }) {
+  const api = useApi();
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const [prep, setPrep] = useState(15);
+  const [busy, setBusy] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
 
-            <div className="flex items-center gap-2">
-              <Store className="w-5 h-5 text-brand" />
-              <h1 className="font-black text-base text-text-primary">
-                Punjabi Angithi — Kitchen Console
-              </h1>
-            </div>
+  const run = async (fn: () => Promise<void>, ok: string) => {
+    setBusy(true);
+    try {
+      await fn();
+      toast(ok, "success");
+    } catch (err) {
+      toast(errorMessage(err), "error");
+    } finally {
+      setBusy(false);
+      queryClient.invalidateQueries({ queryKey: ["merchant-orders", restaurantId] });
+    }
+  };
+
+  const state = order.fulfillmentState;
+  return (
+    <article className="bg-white rounded-2xl border border-border p-4 shadow-sm space-y-3">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className="text-xs font-bold text-text-secondary">#{order.orderNumber}</p>
+          <p className="text-[11px] text-text-secondary">{timeAgo(order.createdAt)}</p>
+        </div>
+        {state === "AWAITING_MERCHANT" ? <Countdown deadline={order.merchantResponseDeadlineAt} /> : <span className="text-[11px] font-bold text-text-secondary">{STATE_LABELS[state]}</span>}
+      </div>
+
+      <ul className="space-y-1.5 text-sm">
+        {order.items.map((i, idx) => (
+          <li key={idx}>
+            <span className="font-bold">{i.quantity} ×</span> {i.name}
+            {i.variantName && <span className="text-text-secondary"> · {i.variantName}</span>}
+            {i.selectedOptionNames.length > 0 && <span className="block text-[11px] text-text-secondary">+ {i.selectedOptionNames.join(", ")}</span>}
+            {i.instructions && <span className="block text-[11px] text-amber-800 font-semibold">“{i.instructions}”</span>}
+          </li>
+        ))}
+      </ul>
+      {order.instructions && <p className="text-xs bg-amber-50 text-amber-900 p-2 rounded-lg">Note: {order.instructions}</p>}
+      <p className="text-xs text-text-secondary">Item total {formatRupees(order.breakdown.subtotalPaise)}</p>
+
+      {(state === "ACCEPTED" || state === "PREPARING" || state === "READY_FOR_PICKUP") && order.pickupCode && (
+        <div className="flex items-center gap-2 p-2 rounded-xl bg-surface-muted text-xs">
+          <KeyRound className="w-4 h-4 text-brand" /> Pickup code <b className="tracking-widest text-sm">{order.pickupCode}</b>
+          {order.rider && <span className="ml-auto text-text-secondary">Rider: {order.rider.name}</span>}
+        </div>
+      )}
+
+      {state === "AWAITING_MERCHANT" && (
+        <div className="space-y-2">
+          <div className="flex gap-1.5 flex-wrap" role="radiogroup" aria-label="Preparation time">
+            {PREP_OPTIONS.map((m) => (
+              <button key={m} role="radio" aria-checked={prep === m} onClick={() => setPrep(m)} className={`px-2.5 py-1 rounded-lg border text-xs font-bold ${prep === m ? "bg-text-primary text-white border-text-primary" : "border-border"}`}>
+                {m}m
+              </button>
+            ))}
           </div>
-
-          <div className="flex items-center gap-4">
-            <button
-              onClick={() => setIsAccepting(!isAccepting)}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold transition-all border ${
-                isAccepting
-                  ? "bg-success-light text-success border-success"
-                  : "bg-red-50 text-red-600 border-red-200"
-              }`}
-            >
-              <span className="w-2 h-2 rounded-full bg-current" />
-              <span>{isAccepting ? "Accepting Orders (Online)" : "Paused (Offline)"}</span>
+          <div className="flex gap-2">
+            <button disabled={busy} onClick={() => setRejecting(true)} className="px-3 py-2.5 rounded-xl border border-red-200 text-red-700 text-sm font-bold">
+              Reject
+            </button>
+            <button disabled={busy} onClick={() => run(() => api.merchantAcceptOrder(order.orderId, prep), "Order accepted")} className="flex-1 py-2.5 rounded-xl bg-success text-white text-sm font-black flex items-center justify-center gap-2">
+              {busy && <Spinner />} Accept · {prep} min
             </button>
           </div>
         </div>
-      </header>
+      )}
+      {state === "ACCEPTED" && (
+        <div className="flex gap-2">
+          <button disabled={busy} onClick={() => run(() => api.merchantMarkPreparing(order.orderId), "Marked as preparing")} className="flex-1 py-2.5 rounded-xl border border-border text-sm font-bold">
+            Start preparing
+          </button>
+          <button disabled={busy} onClick={() => run(() => api.merchantMarkReady(order.orderId), "Marked ready")} className="flex-1 py-2.5 rounded-xl bg-brand text-white text-sm font-bold">
+            Food ready
+          </button>
+        </div>
+      )}
+      {state === "PREPARING" && (
+        <button disabled={busy} onClick={() => run(() => api.merchantMarkReady(order.orderId), "Marked ready")} className="w-full py-2.5 rounded-xl bg-brand text-white text-sm font-bold">
+          Food ready for pickup
+        </button>
+      )}
+      {(state === "ACCEPTED" || state === "PREPARING" || state === "READY_FOR_PICKUP") && (
+        <button onClick={() => setRejecting(true)} className="text-[11px] text-text-secondary underline">
+          Can&apos;t fulfil this order?
+        </button>
+      )}
 
-      {/* Main Merchant Dashboard */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-        {/* Section 1: Incoming Urgent Orders (Awaiting 90s SLA) */}
-        <div>
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <h2 className="text-lg font-black text-text-primary tracking-tight">
-                New Incoming Orders
-              </h2>
-              {incomingOrders.length > 0 && (
-                <span className="px-2 py-0.5 bg-brand text-white text-xs font-bold rounded-full animate-bounce">
-                  {incomingOrders.length} Urgent
+      <Modal open={rejecting} onClose={() => setRejecting(false)} size="sm" title="Reject order" description="The customer will be refunded in full.">
+        <ul className="space-y-2">
+          {REJECT_REASONS.map((r) => (
+            <li key={r}>
+              <button
+                onClick={() => {
+                  setRejecting(false);
+                  run(() => api.merchantRejectOrder(order.orderId, r), "Order rejected");
+                }}
+                className="w-full text-left p-3 rounded-xl border border-border hover:border-red-300 text-sm"
+              >
+                {r}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </Modal>
+    </article>
+  );
+}
+
+function MenuAvailability({ restaurantSlug, restaurantId }: { restaurantSlug: string; restaurantId: string }) {
+  const api = useApi();
+  const toast = useToast();
+  const menu = useQuery({ queryKey: ["restaurant", restaurantSlug], queryFn: () => api.getRestaurantBySlug(restaurantSlug) });
+  if (!menu.data) return <Spinner />;
+  return (
+    <div className="space-y-6">
+      {menu.data.categories.map((cat) => (
+        <section key={cat.id}>
+          <h3 className="font-bold mb-2">{cat.name}</h3>
+          <ul className="divide-y divide-border rounded-2xl border border-border bg-white">
+            {cat.items.map((item) => (
+              <li key={item.id} className="p-3 flex items-center justify-between gap-3">
+                <span className="flex items-center gap-2 text-sm">
+                  <VegMark tag={item.dietaryTag} /> {item.name}
                 </span>
-              )}
-            </div>
-            <p className="text-xs text-text-secondary">90s SLA Acceptance Deadline</p>
-          </div>
+                <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer">
+                  {item.isAvailable ? "In stock" : "Sold out"}
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    checked={item.isAvailable}
+                    onChange={async (e) => {
+                      try {
+                        await api.merchantSetItemAvailability(restaurantId, item.id, e.target.checked);
+                        menu.refetch();
+                      } catch (err) {
+                        toast(errorMessage(err), "error");
+                      }
+                    }}
+                    className="w-5 h-5 accent-[#24963F]"
+                  />
+                </label>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
+    </div>
+  );
+}
 
-          {incomingOrders.length === 0 ? (
-            <div className="p-8 text-center bg-white rounded-3xl border border-border text-xs text-text-secondary">
-              No new orders waiting. Orders will chime and appear here in real-time.
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {incomingOrders.map((o) => (
-                <div
-                  key={o.orderId}
-                  className="bg-white rounded-3xl border-2 border-brand p-6 shadow-xl space-y-4 relative overflow-hidden"
-                >
-                  <div className="flex items-center justify-between border-b border-border pb-3">
-                    <div>
-                      <span className="text-xs font-bold text-text-secondary uppercase">
-                        Order #{o.orderNumber}
-                      </span>
-                      <p className="text-sm font-black text-text-primary">
-                        Total Value: ₹{(o.breakdown.payablePaise / 100).toFixed(0)}
-                      </p>
-                    </div>
+function MerchantConsole() {
+  const api = useApi();
+  const toast = useToast();
+  const restaurants = useQuery({ queryKey: ["merchant-restaurants"], queryFn: () => api.getMerchantRestaurants() });
+  const [restaurantId, setRestaurantId] = useState<string | null>(null);
+  const [tab, setTab] = useState<"live" | "menu" | "history">("live");
+  const [sound, setSound] = useState(false);
+  const seen = useRef<Set<string>>(new Set());
 
-                    <div className="flex items-center gap-1.5 px-3 py-1 bg-amber-50 text-amber-700 rounded-xl text-xs font-black border border-amber-200 animate-pulse">
-                      <Clock className="w-3.5 h-3.5" />
-                      <span>Review SLA: 90s</span>
-                    </div>
-                  </div>
+  useEffect(() => {
+    if (!restaurantId && restaurants.data?.[0]) setRestaurantId(restaurants.data[0].id);
+  }, [restaurants.data, restaurantId]);
+  const restaurant = restaurants.data?.find((r) => r.id === restaurantId);
 
-                  {/* Items Ticket */}
-                  <div className="space-y-2">
-                    {o.items.map((i, idx) => (
-                      <div key={idx} className="text-xs flex items-center justify-between">
-                        <span className="font-bold text-text-primary">
-                          {i.quantity} × {i.name}
-                        </span>
-                        <span className="text-text-secondary">
-                          {i.selectedOptionNames.join(", ") || ""}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
+  const orders = useQuery({
+    queryKey: ["merchant-orders", restaurantId, tab],
+    queryFn: () => api.getMerchantOrders(restaurantId!, tab === "history" ? "all" : "active"),
+    enabled: !!restaurantId && tab !== "menu",
+    refetchInterval: 5000,
+    refetchIntervalInBackground: true,
+  });
 
-                  {/* Prep Time Slider */}
-                  <div className="pt-2 border-t border-border flex items-center justify-between text-xs">
-                    <span className="font-bold text-text-secondary">Prep Time:</span>
-                    <div className="flex items-center gap-1.5">
-                      {[15, 25, 35].map((mins) => (
-                        <button
-                          key={mins}
-                          onClick={() => setSelectedPrepMinutes(mins)}
-                          className={`px-2.5 py-1 rounded-lg font-bold text-xs ${
-                            selectedPrepMinutes === mins
-                              ? "bg-brand text-white"
-                              : "bg-surface-muted text-text-secondary border border-border"
-                          }`}
-                        >
-                          {mins}m
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+  // New-order alert: chime + title flash for orders we have not seen yet
+  useEffect(() => {
+    const fresh = (orders.data ?? []).filter((o) => o.fulfillmentState === "AWAITING_MERCHANT" && !seen.current.has(o.orderId));
+    if (fresh.length > 0 && seen.current.size > 0 && sound) playChime();
+    for (const o of orders.data ?? []) seen.current.add(o.orderId);
+    const pending = (orders.data ?? []).filter((o) => o.fulfillmentState === "AWAITING_MERCHANT").length;
+    document.title = pending ? `(${pending}) New order! · Restaurant` : "Restaurant console";
+  }, [orders.data, sound]);
 
-                  {/* Accept / Reject Action Buttons */}
-                  <div className="flex gap-3 pt-2">
-                    <button
-                      onClick={() => handleReject(o.orderId)}
-                      className="flex-1 py-3 bg-surface-muted hover:bg-red-50 hover:text-red-600 text-text-secondary text-xs font-bold rounded-2xl border border-border transition-colors flex items-center justify-center gap-1.5"
-                    >
-                      <XCircle className="w-4 h-4" />
-                      <span>Reject</span>
-                    </button>
-                    <button
-                      onClick={() => handleAccept(o.orderId)}
-                      className="flex-1 py-3 bg-brand hover:bg-brand-hover text-white text-xs font-black rounded-2xl shadow-lg transition-all flex items-center justify-center gap-1.5"
-                    >
-                      <CheckCircle2 className="w-4 h-4" />
-                      <span>Accept Ticket ({selectedPrepMinutes}m)</span>
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
+  const columns = useMemo(() => {
+    const list = orders.data ?? [];
+    return {
+      new: list.filter((o) => o.fulfillmentState === "AWAITING_MERCHANT"),
+      kitchen: list.filter((o) => o.fulfillmentState === "ACCEPTED" || o.fulfillmentState === "PREPARING"),
+      ready: list.filter((o) => o.fulfillmentState === "READY_FOR_PICKUP"),
+    };
+  }, [orders.data]);
+
+  if (restaurants.isPending) return <div className="p-10 text-center"><Spinner /></div>;
+  if (!restaurants.data?.length) return <EmptyState title="No restaurant linked" body="Ask your restaurant owner to add you as staff." />;
+
+  return (
+    <>
+      <PortalHeader
+        title="Restaurant console"
+        right={
+          <>
+            <button
+              onClick={() => {
+                unlockAudio();
+                setSound(!sound);
+              }}
+              aria-label={sound ? "Mute new order alerts" : "Enable new order alerts"}
+              className={`p-2 rounded-lg ${sound ? "bg-white/20" : "bg-amber-500 animate-pulse"}`}
+              title={sound ? "Alerts on" : "Tap to enable order alert sound"}
+            >
+              {sound ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+            </button>
+          </>
+        }
+      />
+      <div className="max-w-7xl mx-auto px-4 py-4 space-y-4">
+        <div className="flex flex-wrap items-center gap-3 justify-between">
+          <select value={restaurantId ?? ""} onChange={(e) => setRestaurantId(e.target.value)} className="px-3 py-2 rounded-xl border border-border text-sm font-bold">
+            {restaurants.data.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name}
+              </option>
+            ))}
+          </select>
+          {restaurant && (
+            <label className="flex items-center gap-2 text-sm font-bold cursor-pointer">
+              <span className={restaurant.isAcceptingOrders ? "text-success" : "text-red-700"}>{restaurant.isAcceptingOrders ? "Accepting orders" : "Paused"}</span>
+              <input
+                type="checkbox"
+                role="switch"
+                checked={restaurant.isAcceptingOrders}
+                onChange={async (e) => {
+                  try {
+                    await api.merchantSetAcceptingOrders(restaurant.id, e.target.checked);
+                    restaurants.refetch();
+                  } catch (err) {
+                    toast(errorMessage(err), "error");
+                  }
+                }}
+                className="w-5 h-5 accent-[#24963F]"
+              />
+            </label>
           )}
         </div>
 
-        {/* Section 2: Active Kitchen Queue (Accepted / Preparing / Ready) */}
-        <div>
-          <h2 className="text-lg font-black text-text-primary tracking-tight mb-4">
-            Active Kitchen Queue ({activeOrders.length})
-          </h2>
+        <nav className="flex gap-2">
+          {(["live", "menu", "history"] as const).map((t) => (
+            <button key={t} onClick={() => setTab(t)} className={`px-4 py-2 rounded-full text-sm font-bold border ${tab === t ? "bg-brand text-white border-brand" : "border-border"}`}>
+              {t === "live" ? "Live orders" : t === "menu" ? "Menu stock" : "History"}
+            </button>
+          ))}
+        </nav>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {activeOrders.map((o) => (
-              <div
-                key={o.orderId}
-                className="bg-white rounded-3xl border border-border p-6 shadow-xs space-y-4"
-              >
-                <div className="flex items-center justify-between border-b border-border pb-3">
-                  <div>
-                    <span className="text-xs font-bold text-text-secondary">
-                      #{o.orderNumber}
-                    </span>
-                    <h3 className="text-sm font-bold text-text-primary mt-0.5">
-                      {o.fulfillmentState.replace(/_/g, " ")}
-                    </h3>
-                  </div>
-
-                  <span className="text-xs font-black text-text-primary">
-                    ₹{(o.breakdown.payablePaise / 100).toFixed(0)}
-                  </span>
-                </div>
-
-                <div className="space-y-1.5 text-xs text-text-secondary">
-                  {o.items.map((i, idx) => (
-                    <div key={idx}>
-                      <span className="font-bold text-text-primary">
-                        {i.quantity} × {i.name}
-                      </span>
-                    </div>
+        {tab === "live" && restaurantId && (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {([
+              ["new", "New", Bell],
+              ["kitchen", "In the kitchen", ChefHat],
+              ["ready", "Ready for pickup", Package],
+            ] as const).map(([key, title, Icon]) => (
+              <section key={key} className="bg-surface-muted rounded-3xl p-3 min-h-[200px]">
+                <h2 className="text-sm font-black flex items-center gap-2 px-1 mb-3">
+                  <Icon className="w-4 h-4" /> {title} <span className="text-text-secondary">({columns[key].length})</span>
+                </h2>
+                <div className="space-y-3">
+                  {columns[key].map((o) => (
+                    <OrderCard key={o.orderId} order={o} restaurantId={restaurantId} />
                   ))}
+                  {columns[key].length === 0 && <p className="text-xs text-text-secondary text-center py-8">Nothing here</p>}
                 </div>
-
-                {/* State Progression Action */}
-                <div className="pt-3 border-t border-border">
-                  {o.fulfillmentState === FulfillmentState.ACCEPTED && (
-                    <button
-                      onClick={() => handleMarkPreparing(o.orderId)}
-                      className="w-full py-2.5 bg-brand-light text-brand hover:bg-brand hover:text-white rounded-xl text-xs font-bold transition-colors flex items-center justify-center gap-1.5"
-                    >
-                      <ChefHat className="w-4 h-4" />
-                      <span>Mark Cooking / Preparing</span>
-                    </button>
-                  )}
-
-                  {o.fulfillmentState === FulfillmentState.PREPARING && (
-                    <button
-                      onClick={() => handleMarkReady(o.orderId)}
-                      className="w-full py-2.5 bg-success text-white hover:bg-emerald-700 rounded-xl text-xs font-bold transition-colors flex items-center justify-center gap-1.5 shadow-sm"
-                    >
-                      <PackageCheck className="w-4 h-4" />
-                      <span>Mark Food Ready for Pickup</span>
-                    </button>
-                  )}
-
-                  {o.fulfillmentState === FulfillmentState.READY_FOR_PICKUP && (
-                    <div className="p-2.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-center text-xs font-bold">
-                      Awaiting Rider Pickup Handshake
-                    </div>
-                  )}
-                </div>
-              </div>
+              </section>
             ))}
           </div>
-        </div>
-      </main>
-    </div>
+        )}
+        {tab === "menu" && restaurant && <MenuAvailability restaurantId={restaurant.id} restaurantSlug={restaurant.slug} />}
+        {tab === "history" && (
+          <ul className="divide-y divide-border rounded-2xl border border-border bg-white">
+            {(orders.data ?? []).map((o) => (
+              <li key={o.orderId} className="p-3 flex items-center justify-between text-sm">
+                <span>
+                  <b>#{o.orderNumber}</b> · {o.items.reduce((n, i) => n + i.quantity, 0)} items
+                  <span className="block text-[11px] text-text-secondary">{formatTime(o.createdAt)}</span>
+                </span>
+                <span className="text-xs font-bold">{STATE_LABELS[o.fulfillmentState]}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {orders.isError && (
+          <p className="text-xs text-red-700 flex items-center gap-1">
+            <X className="w-3 h-3" /> {errorMessage(orders.error)} — retrying…
+          </p>
+        )}
+        <p className="text-[11px] text-text-secondary flex items-center gap-1">
+          <Clock className="w-3 h-3" /> Auto-refreshing every 5 seconds. Keep this tab open during service hours.
+        </p>
+      </div>
+    </>
+  );
+}
+
+export default function MerchantPage() {
+  return (
+    <RoleGate roles={["MERCHANT_STAFF"]} title="Restaurant console">
+      <MerchantConsole />
+    </RoleGate>
   );
 }

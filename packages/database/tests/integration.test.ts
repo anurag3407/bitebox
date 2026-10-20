@@ -6,12 +6,13 @@ import {
   OrderRepository,
   RestaurantRepository,
   SEED_IDS,
+  getDbPool,
 } from "../src/index.js";
 import { LedgerEngine } from "@startup/core";
 
 describe("Database Integration Tests", () => {
   it("fetches restaurant summaries and detailed menu hierarchy", async () => {
-    const restaurants = await RestaurantRepository.listSummaries({ limit: 10 });
+    const { restaurants } = await RestaurantRepository.listSummaries({ limit: 10 });
     expect(restaurants.length).toBeGreaterThanOrEqual(1);
 
     const punjabiAngithi = await RestaurantRepository.findBySlug("punjabi-angithi");
@@ -79,7 +80,7 @@ describe("Database Integration Tests", () => {
       deliveryOtp: "456789",
       pickupOtp: "123456",
       estimatedDeliveryMinutes: 30,
-      razorpayOrderId: "order_mock_rzp_12345",
+      razorpayOrderId: `order_test_${Date.now().toString(36)}`,
     };
 
     // First attempt: creates order
@@ -121,8 +122,15 @@ describe("Database Integration Tests", () => {
     expect(targetJob).toBeDefined();
     expect(targetJob?.kind).toBe("TEST_JOB_KIND");
 
-    // Complete the job
-    await JobRepository.completeJob(jobId, "worker_test_1");
+    // A second worker cannot claim the leased job
+    const competing = await JobRepository.claimRunnableJobs("worker_test_2", 50, 30);
+    expect(competing.find((j) => j.id === jobId)).toBeUndefined();
+
+    // Complete ours; hand back anything else we grabbed so other suites can run it
+    await JobRepository.completeJob(jobId!, "worker_test_1");
+    for (const other of [...claimed, ...competing].filter((j) => j.id !== jobId)) {
+      await getDbPool().query(`UPDATE jobs SET status = 'PENDING', lease_owner = NULL WHERE id = $1`, [other.id]);
+    }
   });
 
   it("posts and verifies balanced ledger entries", async () => {

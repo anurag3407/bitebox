@@ -26,6 +26,8 @@ export const PaymentStatus = {
   AUTHORIZED: "AUTHORIZED",
   CAPTURED: "CAPTURED",
   FAILED: "FAILED",
+  PARTIALLY_REFUNDED: "PARTIALLY_REFUNDED",
+  REFUNDED: "REFUNDED",
 } as const;
 export type PaymentStatus = (typeof PaymentStatus)[keyof typeof PaymentStatus];
 
@@ -104,6 +106,23 @@ export const StockPolicy = {
   UNTRACKED: "UNTRACKED",
 } as const;
 export type StockPolicy = (typeof StockPolicy)[keyof typeof StockPolicy];
+
+export const CouponType = {
+  PERCENTAGE: "PERCENTAGE",
+  FLAT: "FLAT",
+  FREE_DELIVERY: "FREE_DELIVERY",
+} as const;
+export type CouponType = (typeof CouponType)[keyof typeof CouponType];
+
+export const RestaurantSort = {
+  RELEVANCE: "relevance",
+  DISTANCE: "distance",
+  RATING: "rating",
+  DELIVERY_TIME: "delivery_time",
+  COST_LOW_TO_HIGH: "cost_low_to_high",
+  COST_HIGH_TO_LOW: "cost_high_to_low",
+} as const;
+export type RestaurantSort = (typeof RestaurantSort)[keyof typeof RestaurantSort];
 
 export const Currency = {
   INR: "INR",

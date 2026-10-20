@@ -1,4 +1,5 @@
-import { getServerEnv } from "@startup/config";
+import { getServerEnv, isMockSecret } from "@startup/config";
+import { fetchWithTimeout } from "../shared/http.js";
 
 export interface SendSmsInput {
   phone: string;
@@ -6,47 +7,61 @@ export interface SendSmsInput {
   templateId?: string;
 }
 
+export interface SendSmsResult {
+  success: boolean;
+  messageId: string;
+  error?: string;
+}
+
 export class Fast2SmsAdapter {
   private apiKey: string;
+  // Captured in mock mode so tests can assert on outgoing messages
   public sentMessages: SendSmsInput[] = [];
 
   constructor(apiKey?: string) {
-    this.apiKey = apiKey || getServerEnv().FAST2SMS_API_KEY;
+    this.apiKey = apiKey || getServerEnv().FAST2SMS_API_KEY || "";
   }
 
-  async sendSms(input: SendSmsInput): Promise<{ success: boolean; messageId: string }> {
-    const isMock = !this.apiKey || this.apiKey.startsWith("mock");
+  get isMock(): boolean {
+    return isMockSecret(this.apiKey);
+  }
 
-    this.sentMessages.push(input);
+  static normalizeIndianNumber(phone: string): string | null {
+    const digits = phone.replace(/\D/g, "");
+    const local = digits.length === 12 && digits.startsWith("91") ? digits.slice(2) : digits;
+    return /^[6-9]\d{9}$/.test(local) ? local : null;
+  }
 
-    if (isMock) {
-      return {
-        success: true,
-        messageId: `msg_${Date.now()}`,
-      };
+  async sendSms(input: SendSmsInput): Promise<SendSmsResult> {
+    const number = Fast2SmsAdapter.normalizeIndianNumber(input.phone);
+    if (!number) return { success: false, messageId: "", error: "Invalid Indian mobile number" };
+
+    if (this.isMock) {
+      this.sentMessages.push(input);
+      return { success: true, messageId: `msg_${Date.now()}` };
     }
 
-    // Live Fast2SMS endpoint invocation
-    const res = await fetch("https://www.fast2sms.com/dev/bulkV2", {
-      method: "POST",
-      headers: {
-        authorization: this.apiKey,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        route: "dlt",
-        sender_id: getServerEnv().FAST2SMS_SENDER_ID,
-        message: input.message,
-        flash: 0,
-        numbers: input.phone.replace(/\D/g, "").slice(-10),
-      }),
-    });
-
-    const data = await res.json();
-    return {
-      success: data.return === true,
-      messageId: data.request_id || `req_${Date.now()}`,
-    };
+    try {
+      // DLT route requires a registered template; quick-SMS route is for transactional text without one
+      const res = await fetchWithTimeout("https://www.fast2sms.com/dev/bulkV2", {
+        method: "POST",
+        headers: { authorization: this.apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify(
+          input.templateId
+            ? { route: "dlt", sender_id: getServerEnv().FAST2SMS_SENDER_ID, message: input.templateId, variables_values: input.message, numbers: number }
+            : { route: "q", message: input.message, numbers: number, flash: 0 }
+        ),
+        timeoutMs: 5000,
+      });
+      const data = (await res.json().catch(() => ({}))) as { return?: boolean; request_id?: string; message?: unknown };
+      return {
+        success: data.return === true,
+        messageId: data.request_id ?? "",
+        error: data.return === true ? undefined : JSON.stringify(data.message ?? res.status),
+      };
+    } catch (err) {
+      return { success: false, messageId: "", error: (err as Error).message };
+    }
   }
 
   async sendVerificationOtp(phone: string, otp: string): Promise<boolean> {

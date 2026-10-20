@@ -3,388 +3,401 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import {
-  CheckCircle2,
-  Clock,
-  MapPin,
-  Bike,
-  Store,
-  KeyRound,
-  ShieldAlert,
-  ArrowLeft,
-  RefreshCw,
-  Phone,
-  HelpCircle,
-} from "lucide-react";
-import { FulfillmentState, OrderDetailDto } from "@startup/contracts";
-import { ApiClient } from "@startup/api-client";
-import { useAuthStore } from "@/features/auth/auth-store";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowLeft, Bike, CheckCircle2, Clock, KeyRound, MapPin, Phone, ShieldAlert, Star, Store, RotateCcw } from "lucide-react";
+import { FulfillmentState } from "@startup/contracts";
+import type { TrackingSnapshot } from "@startup/api-client";
+import { TrackingMap } from "@/components/tracking/tracking-map";
+import { Modal } from "@/components/ui/modal";
+import { EmptyState, Spinner } from "@/components/ui/misc";
+import { useToast } from "@/components/ui/toast";
+import { useAuth } from "@/features/auth/auth-context";
+import { useCartStore } from "@/features/cart/cart-store";
+import { ApiError, errorMessage, useApi } from "@/lib/api";
+import { STATE_LABELS, formatDateTime, formatRupees, formatTime } from "@/lib/format";
+import { subscribeSse } from "@/lib/sse";
+
+const STEPS: Array<{ state: FulfillmentState; title: string; icon: typeof Store }> = [
+  { state: FulfillmentState.AWAITING_MERCHANT, title: "Order placed", icon: CheckCircle2 },
+  { state: FulfillmentState.ACCEPTED, title: "Restaurant confirmed", icon: Store },
+  { state: FulfillmentState.PREPARING, title: "Preparing your food", icon: Clock },
+  { state: FulfillmentState.OUT_FOR_DELIVERY, title: "On the way", icon: Bike },
+  { state: FulfillmentState.DELIVERED, title: "Delivered", icon: CheckCircle2 },
+];
+const ORDER: FulfillmentState[] = [
+  FulfillmentState.PENDING_PAYMENT,
+  FulfillmentState.AWAITING_MERCHANT,
+  FulfillmentState.ACCEPTED,
+  FulfillmentState.PREPARING,
+  FulfillmentState.READY_FOR_PICKUP,
+  FulfillmentState.PICKED_UP,
+  FulfillmentState.OUT_FOR_DELIVERY,
+  FulfillmentState.DELIVERED,
+];
+
+function RatingForm({ orderId, onDone }: { orderId: string; onDone: () => void }) {
+  const api = useApi();
+  const toast = useToast();
+  const [food, setFood] = useState(0);
+  const [delivery, setDelivery] = useState(0);
+  const [comment, setComment] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const stars = (value: number, set: (v: number) => void, label: string) => (
+    <div className="flex items-center gap-1" role="radiogroup" aria-label={label}>
+      {[1, 2, 3, 4, 5].map((n) => (
+        <button key={n} type="button" role="radio" aria-checked={value === n} aria-label={`${n} star`} onClick={() => set(n)}>
+          <Star className={`w-7 h-7 ${n <= value ? "fill-amber-400 text-amber-400" : "text-border"}`} />
+        </button>
+      ))}
+    </div>
+  );
+
+  return (
+    <form
+      onSubmit={async (e) => {
+        e.preventDefault();
+        if (!food) return;
+        setSaving(true);
+        try {
+          await api.rateOrder(orderId, { foodRating: food, deliveryRating: delivery || undefined, comment: comment.trim() || undefined });
+          toast("Thanks for your feedback!", "success");
+          onDone();
+        } catch (err) {
+          toast(errorMessage(err), "error");
+        } finally {
+          setSaving(false);
+        }
+      }}
+      className="space-y-3"
+    >
+      <div>
+        <p className="text-xs font-semibold text-text-secondary mb-1">How was the food?</p>
+        {stars(food, setFood, "Food rating")}
+      </div>
+      <div>
+        <p className="text-xs font-semibold text-text-secondary mb-1">How was the delivery?</p>
+        {stars(delivery, setDelivery, "Delivery rating")}
+      </div>
+      <textarea
+        value={comment}
+        onChange={(e) => setComment(e.target.value)}
+        maxLength={500}
+        rows={2}
+        placeholder="Tell others what you liked (optional)"
+        className="w-full p-3 bg-surface-muted border border-border rounded-xl text-sm"
+      />
+      <button disabled={!food || saving} className="px-5 py-2.5 bg-brand text-white text-sm font-bold rounded-xl disabled:opacity-50">
+        {saving ? "Submitting…" : "Submit rating"}
+      </button>
+    </form>
+  );
+}
 
 export default function OrderTrackingPage() {
-  const params = useParams();
-  const orderId = params.orderId as string;
+  const { orderId } = useParams<{ orderId: string }>();
   const router = useRouter();
-  const { getToken } = useAuthStore();
+  const api = useApi();
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const replaceCart = useCartStore((s) => s.replaceWith);
+  const { isSignedIn } = useAuth();
+  const [liveStatus, setLiveStatus] = useState<"connecting" | "open" | "retrying" | "closed">("connecting");
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
 
-  const [order, setOrder] = useState<OrderDetailDto | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-
-  const fetchOrder = async () => {
-    setIsRefreshing(true);
-    try {
-      const client = new ApiClient({ baseUrl: "", getToken });
-      const data = await client.getOrder(orderId);
-      setOrder(data);
-    } catch (err) {
-      console.error("Failed to fetch order:", err);
-    } finally {
-      setIsRefreshing(false);
-      setLoading(false);
-    }
-  };
+  const key = ["tracking", orderId];
+  const tracking = useQuery({
+    queryKey: key,
+    queryFn: () => api.getOrderTracking(orderId),
+    enabled: isSignedIn,
+    // Polling is only a fallback when the live stream is down
+    refetchInterval: (q) => (q.state.data?.isTerminal || liveStatus === "open" ? false : 10_000),
+  });
 
   useEffect(() => {
-    fetchOrder();
-    // Poll every 4 seconds to observe real-time status progression from merchant/rider
-    const timer = setInterval(fetchOrder, 4000);
-    return () => clearInterval(timer);
-  }, [orderId]);
+    if (!isSignedIn) return;
+    return subscribeSse(`/api/v1/orders/${orderId}/live`, {
+      getHeaders: () => api.authHeaders(),
+      onEvent: (event, data) => {
+        if (event === "snapshot") queryClient.setQueryData<TrackingSnapshot>(key, JSON.parse(data));
+      },
+      onStatus: setLiveStatus,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orderId, isSignedIn, api]);
 
-  if (loading) {
+  const snapshot = tracking.data;
+  if (tracking.isPending) {
     return (
-      <div className="max-w-4xl mx-auto px-4 py-12 animate-pulse space-y-6">
-        <div className="h-10 bg-surface-muted rounded-xl w-48" />
-        <div className="h-48 bg-surface-muted rounded-3xl" />
+      <div className="max-w-3xl mx-auto px-4 py-10 space-y-4 animate-pulse">
+        <div className="h-40 bg-surface-muted rounded-3xl" />
         <div className="h-64 bg-surface-muted rounded-3xl" />
       </div>
     );
   }
-
-  if (!order) {
+  if (!snapshot) {
     return (
-      <div className="max-w-md mx-auto my-24 p-8 text-center bg-surface-muted rounded-3xl border border-border">
-        <h2 className="text-xl font-bold text-text-primary">Order not found</h2>
-        <p className="text-xs text-text-secondary mt-1 mb-6">
-          The requested order ID does not exist or you do not have permission to view it.
-        </p>
-        <button
-          onClick={() => router.push("/")}
-          className="px-5 py-2.5 bg-brand text-white text-xs font-bold rounded-xl"
-        >
-          Back to Discovery
-        </button>
+      <div className="max-w-md mx-auto my-16 px-4">
+        <EmptyState
+          title={tracking.error instanceof ApiError && tracking.error.status === 404 ? "Order not found" : "Couldn't load your order"}
+          body={errorMessage(tracking.error)}
+          action={<button onClick={() => router.push("/account?tab=orders")} className="px-5 py-2.5 bg-brand text-white text-xs font-bold rounded-xl">Your orders</button>}
+        />
       </div>
     );
   }
 
-  const isCancelled = order.fulfillmentState === FulfillmentState.CANCELLED;
-  const isDelivered = order.fulfillmentState === FulfillmentState.DELIVERED;
+  const order = snapshot.order;
+  const state = order.fulfillmentState;
+  const failed = state === FulfillmentState.CANCELLED || state === FulfillmentState.DELIVERY_FAILED;
+  const delivered = state === FulfillmentState.DELIVERED;
+  const currentIdx = ORDER.indexOf(state);
 
-  // Timeline Step Status
-  const getStepStatus = (stepState: FulfillmentState) => {
-    const states: FulfillmentState[] = [
-      FulfillmentState.AWAITING_MERCHANT,
-      FulfillmentState.ACCEPTED,
-      FulfillmentState.PREPARING,
-      FulfillmentState.READY_FOR_PICKUP,
-      FulfillmentState.OUT_FOR_DELIVERY,
-      FulfillmentState.DELIVERED,
-    ];
-
-    const currentIndex = states.indexOf(order.fulfillmentState as FulfillmentState);
-    const stepIndex = states.indexOf(stepState);
-
-    if (currentIndex > stepIndex) return "COMPLETED";
-    if (currentIndex === stepIndex) return "CURRENT";
-    return "PENDING";
-  };
-
-  const canCancel =
-    order?.fulfillmentState === FulfillmentState.AWAITING_MERCHANT ||
-    order?.fulfillmentState === FulfillmentState.ACCEPTED;
-
-  const handleCancelOrder = async () => {
-    if (!confirm("Are you sure you want to cancel this order? A full refund will be processed immediately.")) return;
+  const reorder = async () => {
     try {
-      const res = await fetch(`/api/v1/orders/${orderId}/cancel`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${getToken()}`,
-        },
-        body: JSON.stringify({ reason: "Cancelled by customer via app" }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error?.message || "Failed to cancel order");
+      const data = await api.getReorder(orderId);
+      if (data.lines.length === 0) {
+        toast("None of these items are available right now.", "error");
+        return;
       }
-      alert("Order successfully cancelled. Refund processed!");
-      await fetchOrder();
-    } catch (err: any) {
-      alert(`Cancellation failed: ${err.message}`);
+      replaceCart(
+        data.lines.map((l) => ({
+          ...l,
+          restaurantId: data.restaurant.id,
+          restaurantName: data.restaurant.name,
+          restaurantSlug: data.restaurant.slug,
+        }))
+      );
+      if (data.unavailable.length) toast(`Not available: ${data.unavailable.join(", ")}`);
+      router.push("/checkout");
+    } catch (err) {
+      toast(errorMessage(err), "error");
     }
   };
 
   return (
-    <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      {/* Back and Refresh Header */}
-      <div className="flex items-center justify-between mb-6">
-        <Link
-          href="/"
-          className="flex items-center gap-1.5 text-xs font-bold text-text-secondary hover:text-brand transition-colors"
-        >
-          <ArrowLeft className="w-4 h-4" />
-          <span>Back to Home</span>
+    <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 space-y-5">
+      <div className="flex items-center justify-between">
+        <Link href="/account?tab=orders" className="flex items-center gap-1.5 text-xs font-bold text-text-secondary hover:text-brand">
+          <ArrowLeft className="w-4 h-4" /> Your orders
         </Link>
-
-        <div className="flex items-center gap-2">
-          {canCancel && (
-            <button
-              onClick={handleCancelOrder}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 border border-red-200 rounded-xl text-xs font-bold text-red-600 hover:bg-red-100 transition-colors"
-            >
-              <span>Cancel Order</span>
-            </button>
-          )}
-
-          <button
-            onClick={fetchOrder}
-            disabled={isRefreshing}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-surface-muted border border-border rounded-xl text-xs font-bold text-text-primary hover:bg-white transition-colors"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin text-brand" : ""}`} />
-            <span>Refresh</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Main Order Header Banner */}
-      <div className="bg-white rounded-3xl border border-border p-6 shadow-xs mb-8">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-bold uppercase tracking-wider text-text-secondary">
-                Order #{order.orderNumber}
-              </span>
-              <span
-                className={`text-[10px] font-extrabold uppercase px-2.5 py-0.5 rounded-full ${
-                  isDelivered
-                    ? "bg-success-light text-success border border-success/30"
-                    : isCancelled
-                    ? "bg-red-50 text-red-600 border border-red-200"
-                    : "bg-blue-50 text-blue-700 border border-blue-200"
-                }`}
-              >
-                {order.fulfillmentState.replace(/_/g, " ")}
-              </span>
-            </div>
-
-            <h1 className="text-2xl font-black text-text-primary tracking-tight mt-1">
-              {order.restaurant.name}
-            </h1>
-            <p className="text-xs text-text-secondary mt-0.5">
-              Placed at {new Date(order.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-            </p>
-          </div>
-
-          {/* Delivery OTP Challenge Callout (For Customer Handshake) */}
-          {!isDelivered && !isCancelled && order.deliveryOtp && (
-            <div className="bg-brand-light border border-brand/30 p-3.5 rounded-2xl flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-brand text-white flex items-center justify-center font-bold">
-                <KeyRound className="w-5 h-5" />
-              </div>
-              <div>
-                <p className="text-[10px] uppercase font-bold text-brand tracking-wider">
-                  Delivery OTP Code
-                </p>
-                <p className="text-xl font-black text-brand tracking-widest">{order.deliveryOtp}</p>
-                <p className="text-[10px] text-text-secondary">Share with delivery partner at door</p>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Order Progress Timeline */}
-      <div className="bg-white rounded-3xl border border-border p-6 shadow-xs mb-8">
-        <h3 className="font-bold text-base text-text-primary mb-6">Delivery Progress</h3>
-
-        {isCancelled ? (
-          <div className="p-4 bg-red-50 rounded-2xl border border-red-200 flex items-start gap-3">
-            <ShieldAlert className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
-            <div>
-              <h4 className="font-bold text-sm text-red-900">Order Cancelled</h4>
-              <p className="text-xs text-red-700 mt-0.5">
-                A full refund has been initiated back to your original payment method via Razorpay.
-              </p>
-            </div>
-          </div>
-        ) : (
-          <div className="relative pl-6 space-y-8 before:absolute before:left-2.5 before:top-3 before:bottom-3 before:w-0.5 before:bg-border">
-            {/* Step 1: Placed */}
-            <div className="relative flex items-start gap-4">
-              <div className="absolute -left-6 mt-1 w-5 h-5 rounded-full bg-success text-white flex items-center justify-center">
-                <CheckCircle2 className="w-3.5 h-3.5" />
-              </div>
-              <div>
-                <h4 className="font-bold text-sm text-text-primary">Order Placed & Paid</h4>
-                <p className="text-xs text-text-secondary">
-                  Payment confirmed securely via Razorpay
-                </p>
-              </div>
-            </div>
-
-            {/* Step 2: Merchant Acceptance */}
-            <div className="relative flex items-start gap-4">
-              <div
-                className={`absolute -left-6 mt-1 w-5 h-5 rounded-full flex items-center justify-center ${
-                  getStepStatus(FulfillmentState.ACCEPTED) === "COMPLETED"
-                    ? "bg-success text-white"
-                    : getStepStatus(FulfillmentState.AWAITING_MERCHANT) === "CURRENT"
-                    ? "bg-brand text-white animate-pulse"
-                    : "bg-surface-muted text-text-secondary border border-border"
-                }`}
-              >
-                <Store className="w-3 h-3" />
-              </div>
-              <div>
-                <h4 className="font-bold text-sm text-text-primary">
-                  {order.fulfillmentState === FulfillmentState.AWAITING_MERCHANT
-                    ? "Restaurant reviewing order (90s SLA)"
-                    : "Order Accepted by Kitchen"}
-                </h4>
-                <p className="text-xs text-text-secondary">
-                  {order.fulfillmentState === FulfillmentState.AWAITING_MERCHANT
-                    ? "Restaurant manager is acknowledging your order"
-                    : "Chef has accepted your ticket and assigned preparation time"}
-                </p>
-              </div>
-            </div>
-
-            {/* Step 3: Kitchen Preparing */}
-            <div className="relative flex items-start gap-4">
-              <div
-                className={`absolute -left-6 mt-1 w-5 h-5 rounded-full flex items-center justify-center ${
-                  getStepStatus(FulfillmentState.READY_FOR_PICKUP) === "COMPLETED"
-                    ? "bg-success text-white"
-                    : order.fulfillmentState === FulfillmentState.PREPARING
-                    ? "bg-brand text-white animate-pulse"
-                    : "bg-surface-muted text-text-secondary border border-border"
-                }`}
-              >
-                <Clock className="w-3 h-3" />
-              </div>
-              <div>
-                <h4 className="font-bold text-sm text-text-primary">
-                  {order.fulfillmentState === FulfillmentState.READY_FOR_PICKUP
-                    ? "Food Packaged & Ready for Pickup"
-                    : "Fresh Cooking in Progress"}
-                </h4>
-                <p className="text-xs text-text-secondary">
-                  Ingredients freshly prepared in accordance with FSSAI hygiene standards
-                </p>
-              </div>
-            </div>
-
-            {/* Step 4: Out for Delivery */}
-            <div className="relative flex items-start gap-4">
-              <div
-                className={`absolute -left-6 mt-1 w-5 h-5 rounded-full flex items-center justify-center ${
-                  isDelivered
-                    ? "bg-success text-white"
-                    : order.fulfillmentState === FulfillmentState.OUT_FOR_DELIVERY
-                    ? "bg-brand text-white animate-pulse"
-                    : "bg-surface-muted text-text-secondary border border-border"
-                }`}
-              >
-                <Bike className="w-3 h-3" />
-              </div>
-              <div>
-                <h4 className="font-bold text-sm text-text-primary">
-                  {isDelivered
-                    ? "Delivered Safely"
-                    : order.fulfillmentState === FulfillmentState.OUT_FOR_DELIVERY
-                    ? "Delivery Partner on the Way"
-                    : "Delivery Partner Assigned"}
-                </h4>
-                <p className="text-xs text-text-secondary">
-                  {isDelivered
-                    ? "Enjoy your hot and delicious meal!"
-                    : "Amit Kumar is delivering your meal on motorcycle"}
-                </p>
-              </div>
-            </div>
-          </div>
+        {!snapshot.isTerminal && (
+          <span className="flex items-center gap-1.5 text-[11px] font-semibold text-text-secondary">
+            <span className={`w-2 h-2 rounded-full ${liveStatus === "open" ? "bg-success animate-pulse" : "bg-amber-400"}`} />
+            {liveStatus === "open" ? "Live" : "Reconnecting…"}
+          </span>
         )}
       </div>
 
-      {/* Order Item Details & Address Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Items Summary */}
-        <div className="bg-white rounded-3xl border border-border p-6 shadow-xs">
-          <h3 className="font-bold text-sm text-text-primary mb-3">Order Summary</h3>
-          <div className="space-y-2 text-xs divide-y divide-border">
-            {order.items.map((i, idx) => (
-              <div key={idx} className="pt-2 flex items-center justify-between">
-                <div>
-                  <span className="font-bold text-text-primary">
-                    {i.quantity} × {i.name}
-                  </span>
-                  {i.variantName && (
-                    <span className="text-text-secondary text-[11px] block">
-                      ({i.variantName})
-                    </span>
-                  )}
-                </div>
-                <span className="font-bold text-text-primary">
-                  ₹{(i.lineTotalPaise / 100).toFixed(0)}
-                </span>
-              </div>
-            ))}
-          </div>
+      {/* Status hero */}
+      <section className={`rounded-3xl p-6 text-white ${failed ? "bg-text-primary" : delivered ? "bg-success" : "bg-brand"}`}>
+        <p className="text-xs font-semibold text-white/80">
+          {order.restaurant.name} · #{order.orderNumber}
+        </p>
+        <h1 className="text-2xl font-black mt-1">{STATE_LABELS[state] ?? state}</h1>
+        {!snapshot.isTerminal && snapshot.etaMinutes && state !== FulfillmentState.PENDING_PAYMENT && (
+          <p className="text-sm mt-1">Arriving in about {snapshot.etaMinutes} min</p>
+        )}
+        {state === FulfillmentState.PENDING_PAYMENT && <p className="text-sm mt-1">We&apos;re confirming your payment. This usually takes a few seconds.</p>}
+        {state === FulfillmentState.AWAITING_MERCHANT && <p className="text-sm mt-1">The restaurant has 90 seconds to confirm. If they can&apos;t, you get a full refund.</p>}
+        {failed && order.cancellationReason && <p className="text-sm mt-1 text-white/90">{order.cancellationReason}</p>}
+        {delivered && order.deliveredAt && <p className="text-sm mt-1">Delivered at {formatTime(order.deliveredAt)}</p>}
+      </section>
 
-          <div className="mt-4 pt-4 border-t border-border flex items-center justify-between text-xs font-black text-text-primary">
-            <span>Total Paid (incl. Taxes & Delivery)</span>
-            <span className="text-brand text-sm">
-              ₹{(order.breakdown.payablePaise / 100).toFixed(2)}
-            </span>
+      {/* OTP */}
+      {!snapshot.isTerminal && order.deliveryOtp && (
+        <section className="bg-brand-light border border-brand/30 p-4 rounded-2xl flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-brand text-white flex items-center justify-center">
+            <KeyRound className="w-5 h-5" />
+          </div>
+          <div>
+            <p className="text-[10px] uppercase font-bold text-brand tracking-wider">Delivery OTP</p>
+            <p className="text-2xl font-black text-brand tracking-[0.3em]">{order.deliveryOtp}</p>
+            <p className="text-[11px] text-text-secondary">Share only when you have received your order</p>
+          </div>
+        </section>
+      )}
+
+      {/* Map + rider */}
+      {!failed && (
+        <section className="bg-white rounded-3xl border border-border p-4 space-y-3">
+          <TrackingMap
+            restaurant={snapshot.restaurantLocation}
+            home={order.deliveryAddress}
+            rider={snapshot.rider?.location}
+            riderStale={snapshot.rider?.isStale}
+          />
+          {snapshot.rider ? (
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-success-light text-success flex items-center justify-center">
+                  <Bike className="w-5 h-5" />
+                </div>
+                <div>
+                  <p className="text-sm font-bold">{snapshot.rider.name}</p>
+                  <p className="text-[11px] text-text-secondary">
+                    {snapshot.rider.isStale ? "Location updating…" : "Your delivery partner"}
+                  </p>
+                </div>
+              </div>
+              {snapshot.rider.phone && !delivered && (
+                <a href={`tel:${snapshot.rider.phone}`} className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-border text-xs font-bold">
+                  <Phone className="w-4 h-4" /> Call
+                </a>
+              )}
+            </div>
+          ) : (
+            !snapshot.isTerminal && <p className="text-xs text-text-secondary">We&apos;ll assign a delivery partner as your food nears ready.</p>
+          )}
+        </section>
+      )}
+
+      {/* Progress */}
+      {!failed && (
+        <section className="bg-white rounded-3xl border border-border p-5">
+          <ol className="relative pl-7 space-y-6 before:absolute before:left-3 before:top-2 before:bottom-2 before:w-0.5 before:bg-border">
+            {STEPS.map((step) => {
+              const idx = ORDER.indexOf(step.state);
+              const done = currentIdx > idx || delivered;
+              const current = !done && (currentIdx === idx || (step.state === FulfillmentState.OUT_FOR_DELIVERY && currentIdx >= ORDER.indexOf(FulfillmentState.PICKED_UP) && !delivered) || (step.state === FulfillmentState.PREPARING && state === FulfillmentState.READY_FOR_PICKUP));
+              const at = snapshot.timeline.find((t) => t.state === step.state)?.at;
+              return (
+                <li key={step.state} className="relative">
+                  <span
+                    className={`absolute -left-7 w-6 h-6 rounded-full flex items-center justify-center ${
+                      done ? "bg-success text-white" : current ? "bg-brand text-white animate-pulse" : "bg-surface-muted text-text-secondary border border-border"
+                    }`}
+                  >
+                    <step.icon className="w-3.5 h-3.5" />
+                  </span>
+                  <p className={`text-sm font-bold ${done || current ? "text-text-primary" : "text-text-secondary"}`}>{step.title}</p>
+                  {at && <p className="text-[11px] text-text-secondary">{formatTime(at)}</p>}
+                </li>
+              );
+            })}
+          </ol>
+        </section>
+      )}
+
+      {failed && (
+        <section className="p-4 bg-red-50 rounded-2xl border border-red-200 flex gap-3">
+          <ShieldAlert className="w-5 h-5 text-red-600 shrink-0" />
+          <div className="text-sm">
+            <p className="font-bold text-red-900">{state === FulfillmentState.CANCELLED ? "Order cancelled" : "Delivery could not be completed"}</p>
+            <p className="text-red-800 mt-0.5">
+              {(order.refundedPaise ?? 0) > 0
+                ? `${formatRupees(order.refundedPaise!)} is being refunded to your original payment method (usually 5–7 working days).`
+                : order.paymentStatus === "PENDING"
+                  ? "You were not charged for this order."
+                  : "Contact support if you believe you are owed a refund."}
+            </p>
+          </div>
+        </section>
+      )}
+
+      {/* Rating */}
+      {order.canRate && (
+        <section className="bg-white rounded-3xl border border-border p-5">
+          <h2 className="font-bold mb-3">Rate your order</h2>
+          <RatingForm orderId={orderId} onDone={() => tracking.refetch()} />
+        </section>
+      )}
+      {order.rating && (
+        <p className="text-sm text-text-secondary flex items-center gap-1">
+          You rated this order {order.rating.foodRating} <Star className="w-4 h-4 fill-amber-400 text-amber-400" />
+        </p>
+      )}
+
+      {/* Summary */}
+      <section className="bg-white rounded-3xl border border-border p-5 text-sm">
+        <h2 className="font-bold mb-3">Order summary</h2>
+        <ul className="space-y-2">
+          {order.items.map((i, idx) => (
+            <li key={idx} className="flex justify-between gap-3">
+              <span>
+                {i.quantity} × {i.name}
+                {i.variantName && <span className="text-text-secondary"> ({i.variantName})</span>}
+                {i.selectedOptionNames.length > 0 && <span className="block text-[11px] text-text-secondary">{i.selectedOptionNames.join(", ")}</span>}
+              </span>
+              <span className="font-medium">{formatRupees(i.lineTotalPaise)}</span>
+            </li>
+          ))}
+        </ul>
+        <div className="mt-3 pt-3 border-t border-border space-y-1 text-xs text-text-secondary">
+          {order.breakdown.discountPaise > 0 && (
+            <div className="flex justify-between text-success">
+              <span>Discount {order.couponCode && `(${order.couponCode})`}</span>
+              <span>−{formatRupees(order.breakdown.discountPaise)}</span>
+            </div>
+          )}
+          <div className="flex justify-between text-sm font-black text-text-primary">
+            <span>Total paid</span>
+            <span>{formatRupees(order.breakdown.payablePaise)}</span>
           </div>
         </div>
+        <div className="mt-4 pt-4 border-t border-border text-xs text-text-secondary flex gap-2">
+          <MapPin className="w-4 h-4 shrink-0" />
+          <span>
+            {order.deliveryAddress.building}, {order.deliveryAddress.street}
+          </span>
+        </div>
+        <p className="text-[11px] text-text-secondary mt-2">Placed {formatDateTime(order.createdAt)}</p>
+      </section>
 
-        {/* Delivery Address Card */}
-        <div className="bg-white rounded-3xl border border-border p-6 shadow-xs">
-          <h3 className="font-bold text-sm text-text-primary mb-3 flex items-center gap-1.5">
-            <MapPin className="w-4 h-4 text-brand" />
-            <span>Delivery Destination</span>
-          </h3>
-          <p className="font-bold text-xs text-text-primary">{order.deliveryAddress.building}</p>
-          <p className="text-xs text-text-secondary mt-0.5">{order.deliveryAddress.street}</p>
-          {order.deliveryAddress.landmark && (
-            <p className="text-[11px] text-text-secondary mt-1">
-              Landmark: {order.deliveryAddress.landmark}
-            </p>
-          )}
+      <div className="flex flex-wrap gap-3">
+        {order.canCancel && (
+          <button onClick={() => setCancelOpen(true)} className="px-4 py-2.5 rounded-xl border border-red-200 bg-red-50 text-red-700 text-sm font-bold">
+            Cancel order
+          </button>
+        )}
+        {snapshot.isTerminal && (
+          <button onClick={reorder} className="px-4 py-2.5 rounded-xl bg-brand text-white text-sm font-bold flex items-center gap-1.5">
+            <RotateCcw className="w-4 h-4" /> Reorder
+          </button>
+        )}
+        {order.restaurant.phone && !snapshot.isTerminal && (
+          <a href={`tel:${order.restaurant.phone}`} className="px-4 py-2.5 rounded-xl border border-border text-sm font-bold flex items-center gap-1.5">
+            <Phone className="w-4 h-4" /> Call restaurant
+          </a>
+        )}
+      </div>
 
-          <div className="mt-6 pt-4 border-t border-border flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-full bg-surface-muted flex items-center justify-center">
-                <Phone className="w-4 h-4 text-text-secondary" />
-              </div>
-              <div>
-                <p className="text-xs font-bold text-text-primary">Delivery Support</p>
-                <p className="text-[10px] text-text-secondary">24x7 Help Center</p>
-              </div>
-            </div>
+      <Modal
+        open={cancelOpen}
+        onClose={() => setCancelOpen(false)}
+        size="sm"
+        title="Cancel this order?"
+        description={order.paymentStatus === "PENDING" ? "You have not been charged." : "You'll get a full refund to your original payment method."}
+        footer={
+          <div className="flex gap-3">
+            <button onClick={() => setCancelOpen(false)} className="flex-1 py-2.5 rounded-xl border border-border text-sm font-bold">
+              Keep order
+            </button>
             <button
-              onClick={() => alert("Our customer support executive is reviewing your order.")}
-              className="px-3 py-1.5 bg-surface-muted border border-border hover:bg-white text-xs font-bold rounded-xl text-text-primary"
+              disabled={cancelling}
+              onClick={async () => {
+                setCancelling(true);
+                try {
+                  await api.cancelOrder(orderId, "Cancelled by customer");
+                  toast("Order cancelled", "success");
+                  setCancelOpen(false);
+                  tracking.refetch();
+                } catch (err) {
+                  toast(errorMessage(err), "error");
+                } finally {
+                  setCancelling(false);
+                }
+              }}
+              className="flex-1 py-2.5 rounded-xl bg-red-600 text-white text-sm font-bold flex items-center justify-center gap-2"
             >
-              Get Help
+              {cancelling && <Spinner />} Cancel order
             </button>
           </div>
-        </div>
-      </div>
+        }
+      >
+        <p className="text-sm text-text-secondary">Once the restaurant accepts your order it can no longer be cancelled from the app.</p>
+      </Modal>
     </div>
   );
 }

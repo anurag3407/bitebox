@@ -1,88 +1,70 @@
 "use client";
 
-import React from "react";
-import { useRouter } from "next/navigation";
-import { User, Store, Bike, ShieldAlert } from "lucide-react";
-import { useAuthStore } from "@/features/auth/auth-store";
+import React, { Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { SignIn } from "@clerk/nextjs";
+import { AlertTriangle } from "lucide-react";
+import { CLERK_ENABLED } from "@/features/auth/clerk-config";
+import { DEMO_PERSONAS, useDemoAuthStore } from "@/features/auth/demo-auth-store";
+import { useQueryClient } from "@tanstack/react-query";
 
-export default function SignInPage() {
+function safeRedirect(target: string | null): string | null {
+  // Only same-site paths: never bounce users to an attacker-supplied absolute URL
+  return target && target.startsWith("/") && !target.startsWith("//") ? target : null;
+}
+
+function DemoSignIn() {
   const router = useRouter();
-  const { setUser } = useAuthStore();
-
-  const handleSelectRole = (role: "customer" | "merchant" | "rider" | "admin", path: string) => {
-    setUser(role);
-    router.push(path);
-  };
+  const params = useSearchParams();
+  const signIn = useDemoAuthStore((s) => s.signIn);
+  const queryClient = useQueryClient();
+  const redirect = safeRedirect(params.get("redirect_url"));
 
   return (
-    <div className="max-w-md mx-auto my-16 px-4">
-      <div className="bg-white rounded-3xl border border-border p-8 shadow-xl text-center space-y-6">
-        <div>
-          <div className="w-12 h-12 bg-brand rounded-2xl flex items-center justify-center text-white font-black text-2xl mx-auto mb-3 shadow-md">
-            Z
-          </div>
-          <h1 className="text-2xl font-black text-text-primary tracking-tight">
-            Sign In to ZomatoFresh
-          </h1>
-          <p className="text-xs text-text-secondary mt-1">
-            Choose your persona to test and experience the platform
-          </p>
+    <div className="max-w-md mx-auto my-12 px-4">
+      <div className="bg-white rounded-3xl border border-border p-8 shadow-xl space-y-6">
+        <div className="text-center">
+          <img src="/icons/icon-192.png" alt="" className="w-12 h-12 rounded-2xl mx-auto mb-3" />
+          <h1 className="text-2xl font-black">Sign in</h1>
         </div>
-
-        <div className="space-y-3 text-left">
-          <button
-            onClick={() => handleSelectRole("customer", "/")}
-            className="w-full p-4 rounded-2xl border border-border hover:border-brand hover:bg-brand-light/30 transition-all flex items-center gap-3.5 group cursor-pointer"
-          >
-            <div className="w-10 h-10 rounded-xl bg-surface-muted group-hover:bg-brand group-hover:text-white flex items-center justify-center text-text-secondary transition-colors">
-              <User className="w-5 h-5" />
-            </div>
-            <div>
-              <h4 className="font-bold text-sm text-text-primary">Rahul Sharma (Customer)</h4>
-              <p className="text-xs text-text-secondary">Browse menus, customize dishes & order</p>
-            </div>
-          </button>
-
-          <button
-            onClick={() => handleSelectRole("merchant", "/merchant")}
-            className="w-full p-4 rounded-2xl border border-border hover:border-brand hover:bg-brand-light/30 transition-all flex items-center gap-3.5 group cursor-pointer"
-          >
-            <div className="w-10 h-10 rounded-xl bg-surface-muted group-hover:bg-brand group-hover:text-white flex items-center justify-center text-text-secondary transition-colors">
-              <Store className="w-5 h-5" />
-            </div>
-            <div>
-              <h4 className="font-bold text-sm text-text-primary">Chef Vikram (Restaurant Partner)</h4>
-              <p className="text-xs text-text-secondary">Accept tickets with 90s SLA timer & mark prep</p>
-            </div>
-          </button>
-
-          <button
-            onClick={() => handleSelectRole("rider", "/rider")}
-            className="w-full p-4 rounded-2xl border border-border hover:border-brand hover:bg-brand-light/30 transition-all flex items-center gap-3.5 group cursor-pointer"
-          >
-            <div className="w-10 h-10 rounded-xl bg-surface-muted group-hover:bg-brand group-hover:text-white flex items-center justify-center text-text-secondary transition-colors">
-              <Bike className="w-5 h-5" />
-            </div>
-            <div>
-              <h4 className="font-bold text-sm text-text-primary">Amit Kumar (Delivery Fleet)</h4>
-              <p className="text-xs text-text-secondary">Accept offers, navigate & enter delivery OTP</p>
-            </div>
-          </button>
-
-          <button
-            onClick={() => handleSelectRole("admin", "/admin")}
-            className="w-full p-4 rounded-2xl border border-border hover:border-brand hover:bg-brand-light/30 transition-all flex items-center gap-3.5 group cursor-pointer"
-          >
-            <div className="w-10 h-10 rounded-xl bg-surface-muted group-hover:bg-brand group-hover:text-white flex items-center justify-center text-text-secondary transition-colors">
-              <ShieldAlert className="w-5 h-5" />
-            </div>
-            <div>
-              <h4 className="font-bold text-sm text-text-primary">Siddharth (Operations / Admin)</h4>
-              <p className="text-xs text-text-secondary">Live orders board & financial refunds</p>
-            </div>
-          </button>
+        <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex gap-2">
+          <AlertTriangle className="w-4 h-4 shrink-0" />
+          <span>
+            Development mode: Clerk is not configured, so you can sign in as a demo persona. Set <code>NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY</code> and{" "}
+            <code>CLERK_ISSUER</code> for real accounts. The server rejects demo personas in staging and production.
+          </span>
         </div>
+        <ul className="space-y-3">
+          {DEMO_PERSONAS.map((p) => (
+            <li key={p.key}>
+              <button
+                onClick={() => {
+                  signIn(p.key);
+                  queryClient.clear();
+                  router.push(redirect ?? p.home);
+                }}
+                className="w-full p-4 rounded-2xl border border-border hover:border-brand text-left"
+              >
+                <p className="font-bold text-sm">{p.name}</p>
+                <p className="text-xs text-text-secondary">{p.role.replace("_", " ").toLowerCase()}</p>
+              </button>
+            </li>
+          ))}
+        </ul>
       </div>
     </div>
   );
+}
+
+function ClerkSignIn() {
+  const params = useSearchParams();
+  return (
+    <div className="flex justify-center my-12 px-4">
+      <SignIn routing="path" path="/sign-in" signUpUrl="/sign-up" forceRedirectUrl={safeRedirect(params.get("redirect_url")) ?? "/"} />
+    </div>
+  );
+}
+
+export default function SignInPage() {
+  return <Suspense>{CLERK_ENABLED ? <ClerkSignIn /> : <DemoSignIn />}</Suspense>;
 }

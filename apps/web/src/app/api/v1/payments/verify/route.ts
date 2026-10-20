@@ -1,81 +1,88 @@
-import { NextRequest } from "next/server";
 import { VerifyPaymentRequestSchema } from "@startup/contracts";
+import { DomainError } from "@startup/core";
 import { OrderRepository, getDb, paymentAttempts } from "@startup/database";
-import { RazorpayAdapter } from "@startup/integrations";
-import { apiError, apiSuccess } from "@/server/api-response";
-import { getAuthenticatedActor, getOrCreateDbUser } from "@/server/auth-guard";
-import { desc, eq } from "drizzle-orm";
+import { ProviderUnavailableError, RazorpayAdapter } from "@startup/integrations";
+import { and, eq } from "drizzle-orm";
+import { apiSuccess } from "@/server/api-response";
+import { requireAuth } from "@/server/auth-guard";
+import { enforceRateLimit } from "@/server/rate-limit";
+import { parseBody, route } from "@/server/route";
 
-export async function POST(req: NextRequest) {
-  try {
-    const actor = await getAuthenticatedActor(req);
-    if (!actor) {
-      return apiError("UNAUTHENTICATED", "Authentication required to verify payment", 401);
+export const POST = route(async (req, _ctx, requestId) => {
+  const auth = await requireAuth(req);
+  await enforceRateLimit(req, "paymentVerify", auth.user.id);
+  const { orderId, razorpayPaymentId, razorpayOrderId, razorpaySignature } = await parseBody(
+    req,
+    VerifyPaymentRequestSchema
+  );
+
+  // 1. Only the order's customer may confirm its payment
+  const access = await OrderRepository.findAccessContext(orderId);
+  if (!access || access.customerId !== auth.user.id) throw new DomainError("NOT_FOUND", "Order not found");
+
+  // 2. The provider order must be one we created for this order
+  const [attempt] = await getDb()
+    .select()
+    .from(paymentAttempts)
+    .where(and(eq(paymentAttempts.orderId, orderId), eq(paymentAttempts.razorpayOrderId, razorpayOrderId)))
+    .limit(1);
+  if (!attempt) throw new DomainError("VALIDATION_ERROR", "Payment does not belong to this order");
+
+  // 3. Signature proves the callback came from Razorpay checkout for this provider order
+  const razorpay = new RazorpayAdapter();
+  const isValid = razorpay.verifyPaymentSignature({
+    orderId: attempt.razorpayOrderId,
+    paymentId: razorpayPaymentId,
+    signature: razorpaySignature,
+  });
+  if (!isValid) throw new DomainError("PAYMENT_FAILED", "We could not verify this payment. If money was debited it will be refunded automatically.");
+
+  // 4. Confirm the money actually moved (status + amount) before releasing the order to the kitchen
+  let amountPaise = attempt.amountPaise;
+  let currency = attempt.currency;
+  if (!razorpay.isMock) {
+    try {
+      let payment = await razorpay.fetchPayment(razorpayPaymentId);
+      if (payment.orderId !== attempt.razorpayOrderId) {
+        throw new DomainError("VALIDATION_ERROR", "Payment does not belong to this order");
+      }
+      if (payment.status === "authorized") {
+        payment = await razorpay.capturePayment(razorpayPaymentId, payment.amountPaise, payment.currency);
+      }
+      if (payment.status !== "captured") {
+        throw new DomainError("PAYMENT_FAILED", "Payment has not completed. Please retry.");
+      }
+      amountPaise = payment.amountPaise;
+      currency = payment.currency;
+    } catch (err) {
+      if (err instanceof ProviderUnavailableError) {
+        // Outcome unknown: the webhook / payment reconciler will finalize it
+        return apiSuccess({ success: true, orderId, status: "CONFIRMING", fulfillmentState: "PENDING_PAYMENT" }, 202, {
+          requestId,
+        });
+      }
+      throw err;
     }
-
-    const body = await req.json();
-    const parsed = VerifyPaymentRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      return apiError("VALIDATION_ERROR", "Invalid verification payload", 400, parsed.error.format());
-    }
-
-    const { orderId, razorpayPaymentId, razorpayOrderId, razorpaySignature } = parsed.data;
-
-    // 1. Fetch order and check ownership
-    const order = await OrderRepository.findById(orderId);
-    if (!order) {
-      return apiError("NOT_FOUND", "Order not found", 404);
-    }
-
-    const user = await getOrCreateDbUser(actor);
-    if (actor.role === "CUSTOMER" && order.customerId && order.customerId !== user.id) {
-      return apiError("FORBIDDEN", "You do not have permission to verify payment for this order", 403);
-    }
-
-    // 2. Fetch server-stored payment attempt and verify provider order ID match
-    const db = getDb();
-    const [attempt] = await db
-      .select()
-      .from(paymentAttempts)
-      .where(eq(paymentAttempts.orderId, orderId))
-      .orderBy(desc(paymentAttempts.createdAt))
-      .limit(1);
-
-    if (!attempt) {
-      return apiError("NOT_FOUND", "No payment attempt found for this order", 404);
-    }
-
-    if (attempt.razorpayOrderId !== razorpayOrderId) {
-      return apiError("VALIDATION_ERROR", "Razorpay order ID does not match server-stored attempt", 400);
-    }
-
-    // 3. Verify Cryptographic Signature against server-stored order ID
-    const razorpayAdapter = new RazorpayAdapter();
-    const isValid = razorpayAdapter.verifyPaymentSignature({
-      orderId: attempt.razorpayOrderId,
-      paymentId: razorpayPaymentId,
-      signature: razorpaySignature,
-    });
-
-    if (!isValid) {
-      return apiError("PAYMENT_FAILED", "Invalid Razorpay payment cryptographic signature", 400);
-    }
-
-    // 4. Record Capture & Transition to AWAITING_MERCHANT
-    await OrderRepository.recordPaymentCapture({
-      orderId,
-      providerPaymentId: razorpayPaymentId,
-      amountPaise: order.breakdown.payablePaise,
-      paymentAttemptId: attempt.id,
-    });
-
-    return apiSuccess({
-      success: true,
-      orderId,
-      status: "CAPTURED",
-      fulfillmentState: "AWAITING_MERCHANT",
-    });
-  } catch (err: any) {
-    return apiError("INTERNAL_ERROR", err.message || "Failed to verify payment", 500);
   }
-}
+
+  const { outcome } = await OrderRepository.recordPaymentCapture({
+    orderId,
+    providerPaymentId: razorpayPaymentId,
+    amountPaise,
+    currency,
+    paymentAttemptId: attempt.id,
+  });
+
+  const order = await OrderRepository.findById(orderId);
+  return apiSuccess(
+    {
+      success: outcome === "CAPTURED" || outcome === "ALREADY_RECORDED",
+      outcome,
+      orderId,
+      status: order?.paymentStatus,
+      fulfillmentState: order?.fulfillmentState,
+    },
+    200,
+    { requestId }
+  );
+});

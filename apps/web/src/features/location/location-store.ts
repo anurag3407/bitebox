@@ -5,46 +5,40 @@ import { persist } from "zustand/middleware";
 import { AddressDto, Coordinate } from "@startup/contracts";
 
 interface LocationState {
-  currentLocation: Coordinate;
-  locationLabel: string;
-  selectedAddress: AddressDto | null;
-  setLocation: (coord: Coordinate, label: string) => void;
-  setSelectedAddress: (address: AddressDto) => void;
+  // Where the customer wants food delivered; null until chosen
+  location: Coordinate | null;
+  label: string | null;
+  // Saved address backing the location (needed for checkout); null for a raw GPS/search pin
+  addressId: string | null;
+  setPin: (coord: Coordinate, label: string) => void;
+  setAddress: (address: AddressDto) => void;
+  clear: () => void;
+}
+
+export function addressLabel(address: Pick<AddressDto, "building" | "street">): string {
+  return [address.building, address.street].filter(Boolean).join(", ");
 }
 
 export const useLocationStore = create<LocationState>()(
   persist(
     (set) => ({
-      currentLocation: {
-        latitude: 28.6315,
-        longitude: 77.2167,
-      },
-      locationLabel: "Connaught Place, Central Delhi",
-      selectedAddress: {
-        id: "40000000-0000-4000-8000-000000000001",
-        label: "Home",
-        building: "Flat 402, Royal Residency",
-        street: "Barakhamba Road, Connaught Place",
-        landmark: "Near Metro Station",
-        latitude: 28.6315,
-        longitude: 77.2167,
-        isDefault: true,
-        contactPhone: "+919876543210",
-      },
-      setLocation: (currentLocation, locationLabel) =>
-        set({ currentLocation, locationLabel }),
-      setSelectedAddress: (selectedAddress) =>
+      location: null,
+      label: null,
+      addressId: null,
+      setPin: (location, label) => set({ location, label, addressId: null }),
+      setAddress: (address) =>
         set({
-          selectedAddress,
-          currentLocation: {
-            latitude: selectedAddress.latitude,
-            longitude: selectedAddress.longitude,
-          },
-          locationLabel: `${selectedAddress.building}, ${selectedAddress.street}`,
+          location: { latitude: address.latitude, longitude: address.longitude },
+          label: addressLabel(address),
+          addressId: address.id,
         }),
+      clear: () => set({ location: null, label: null, addressId: null }),
     }),
     {
-      name: "food_delivery_location_v1",
+      name: "food_delivery_location_v2",
+      version: 2,
+      // v1 shipped a hard-coded demo address for everyone; drop it
+      migrate: () => ({ location: null, label: null, addressId: null }),
     }
   )
 );

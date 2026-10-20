@@ -1,133 +1,114 @@
 "use client";
 
-import React, { Suspense, useEffect, useState, useTransition } from "react";
-import { useSearchParams } from "next/navigation";
+import React, { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
-import { Search as SearchIcon, ArrowRight, Utensils, Store } from "lucide-react";
-import { SearchResultDto } from "@startup/contracts";
-import { ApiClient } from "@startup/api-client";
-import { useLocationStore } from "@/features/location/location-store";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
+import { Search } from "lucide-react";
 import { RestaurantCard } from "@/components/discovery/RestaurantCard";
+import { EmptyState, SafeImage, VegMark } from "@/components/ui/misc";
+import { useLocationStore } from "@/features/location/location-store";
+import { useApi } from "@/lib/api";
+import { formatRupees } from "@/lib/format";
+
+const SUGGESTIONS = ["Biryani", "Paneer", "Burger", "Dosa", "Chaat", "Butter Chicken"];
 
 function SearchContent() {
-  const searchParams = useSearchParams();
-  const initialQuery = searchParams.get("q") || "";
-  const { currentLocation } = useLocationStore();
-
-  const [query, setQuery] = useState(initialQuery);
-  const [results, setResults] = useState<SearchResultDto | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [isPending, startTransition] = useTransition();
+  const api = useApi();
+  const router = useRouter();
+  const params = useSearchParams();
+  const location = useLocationStore((s) => s.location);
+  const [input, setInput] = useState(params.get("q") ?? "");
+  const [query, setQuery] = useState(params.get("q") ?? "");
+  const [vegOnly, setVegOnly] = useState(false);
 
   useEffect(() => {
-    if (!query.trim()) {
-      setResults(null);
-      return;
-    }
-
-    const timer = setTimeout(async () => {
-      setLoading(true);
-      try {
-        const client = new ApiClient({ baseUrl: "" });
-        const res = await client.search(query.trim(), currentLocation);
-        startTransition(() => {
-          setResults(res);
-        });
-      } catch (err) {
-        console.error("Search failed:", err);
-      } finally {
-        setLoading(false);
-      }
+    const t = setTimeout(() => {
+      setQuery(input.trim());
+      router.replace(input.trim() ? `/search?q=${encodeURIComponent(input.trim())}` : "/search", { scroll: false });
     }, 300);
+    return () => clearTimeout(t);
+  }, [input, router]);
 
-    return () => clearTimeout(timer);
-  }, [query, currentLocation]);
+  const results = useQuery({
+    queryKey: ["search", query, location, vegOnly],
+    queryFn: () => api.search(query, location ?? undefined, vegOnly),
+    enabled: query.length >= 2,
+    placeholderData: (prev) => prev,
+  });
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      {/* Search Bar Input */}
-      <div className="max-w-2xl mx-auto mb-10">
-        <div className="relative">
-          <SearchIcon className="w-5 h-5 text-text-secondary absolute left-4 top-3.5 pointer-events-none" />
-          <input
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search for 'Butter Chicken', 'Biryani', 'Punjabi Angithi'..."
-            autoFocus
-            className="w-full pl-12 pr-4 py-3.5 bg-surface-muted border border-border rounded-2xl text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand shadow-xs transition-all"
-          />
-        </div>
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6">
+      <div className="relative">
+        <Search className="w-5 h-5 text-text-secondary absolute left-4 top-3.5" />
+        <input
+          autoFocus
+          type="search"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Search for dishes or restaurants"
+          aria-label="Search"
+          className="w-full pl-12 pr-4 py-3 bg-surface-muted border border-border rounded-2xl text-base focus:outline-none focus:ring-2 focus:ring-brand/20"
+        />
+      </div>
+      <div className="flex gap-2 mt-3 overflow-x-auto">
+        <button
+          onClick={() => setVegOnly(!vegOnly)}
+          aria-pressed={vegOnly}
+          className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-semibold ${vegOnly ? "bg-success-light text-success border-success" : "border-border"}`}
+        >
+          <VegMark tag="VEG" /> Veg only
+        </button>
+        {query.length < 2 &&
+          SUGGESTIONS.map((s) => (
+            <button key={s} onClick={() => setInput(s)} className="shrink-0 px-3 py-1.5 rounded-full border border-border text-xs font-semibold hover:bg-surface-muted">
+              {s}
+            </button>
+          ))}
       </div>
 
-      {loading && (
-        <div className="text-center py-12 text-xs font-semibold text-text-secondary animate-pulse">
-          Searching menus and outlets...
-        </div>
-      )}
-
-      {results && (
-        <div className="space-y-12">
-          {/* 1. Matching Restaurants */}
-          {results.restaurants.length > 0 && (
-            <div>
-              <h2 className="text-lg font-bold text-text-primary tracking-tight mb-4 flex items-center gap-2">
-                <Store className="w-5 h-5 text-brand" />
-                <span>Matching Restaurants ({results.restaurants.length})</span>
-              </h2>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                {results.restaurants.map((res) => (
-                  <RestaurantCard key={res.id} restaurant={res} />
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* 2. Matching Dishes */}
-          {results.dishes.length > 0 && (
-            <div>
-              <h2 className="text-lg font-bold text-text-primary tracking-tight mb-4 flex items-center gap-2">
-                <Utensils className="w-5 h-5 text-brand" />
-                <span>Matching Dishes ({results.dishes.length})</span>
-              </h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {results.dishes.map(({ dish, restaurant }) => (
-                  <Link
-                    key={`${dish.id}_${restaurant.id}`}
-                    href={`/restaurants/${restaurant.slug}`}
-                    className="p-4 bg-white rounded-2xl border border-border hover:border-brand/40 hover:shadow-md transition-all flex items-center justify-between gap-4 group"
-                  >
-                    <div>
-                      <span className="text-[10px] font-bold text-brand uppercase tracking-wider">
-                        {restaurant.name}
-                      </span>
-                      <h4 className="font-bold text-sm text-text-primary group-hover:text-brand transition-colors mt-0.5">
-                        {dish.name}
-                      </h4>
-                      <p className="text-xs font-bold text-text-primary mt-1">
-                        ₹{(dish.pricePaise / 100).toFixed(0)}
-                      </p>
-                    </div>
-
-                    <div className="flex items-center gap-1 text-xs font-bold text-brand bg-brand-light px-3 py-1.5 rounded-xl group-hover:bg-brand group-hover:text-white transition-colors shrink-0">
-                      <span>View Menu</span>
-                      <ArrowRight className="w-3.5 h-3.5" />
-                    </div>
-                  </Link>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {results.restaurants.length === 0 && results.dishes.length === 0 && (
-            <div className="text-center py-16 bg-surface-muted rounded-2xl border border-border">
-              <p className="text-sm font-bold text-text-primary">
-                No results found for &quot;{query}&quot;
-              </p>
-              <p className="text-xs text-text-secondary mt-1">
-                Try searching for generic terms like &quot;Dal&quot;, &quot;Paneer&quot;, &quot;Tandoori&quot;, or &quot;Burger&quot;
-              </p>
-            </div>
+      {query.length >= 2 && (
+        <div className="mt-6 space-y-8">
+          {results.isPending ? (
+            <div className="h-40 bg-surface-muted rounded-2xl animate-pulse" />
+          ) : !results.data?.restaurants.length && !results.data?.dishes.length ? (
+            <EmptyState title={`No results for “${query}”`} body={location ? "Nothing that delivers to your location matches. Try another dish." : "Try a different spelling or dish."} />
+          ) : (
+            <>
+              {results.data.restaurants.length > 0 && (
+                <section>
+                  <h2 className="text-lg font-bold mb-3">Restaurants</h2>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+                    {results.data.restaurants.map((r) => (
+                      <RestaurantCard key={r.id} restaurant={r} />
+                    ))}
+                  </div>
+                </section>
+              )}
+              {results.data.dishes.length > 0 && (
+                <section>
+                  <h2 className="text-lg font-bold mb-3">Dishes</h2>
+                  <ul className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {results.data.dishes.map(({ dish, restaurant }) => (
+                      <li key={dish.id}>
+                        <Link href={`/restaurants/${restaurant.slug}`} className={`flex gap-3 p-3 rounded-2xl border border-border hover:shadow-md ${!dish.isAvailable ? "opacity-60" : ""}`}>
+                          <SafeImage src={dish.imageUrl} alt="" className="w-20 h-20 rounded-xl object-cover shrink-0" />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <VegMark tag={dish.dietaryTag} />
+                              <p className="font-bold text-sm truncate">{dish.name}</p>
+                            </div>
+                            <p className="text-xs font-semibold mt-0.5">{formatRupees(dish.pricePaise)}</p>
+                            <p className="text-xs text-text-secondary truncate">from {restaurant.name}</p>
+                            {!dish.isAvailable && <p className="text-[11px] font-bold text-red-700">Sold out</p>}
+                          </div>
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+            </>
           )}
         </div>
       )}
@@ -137,13 +118,7 @@ function SearchContent() {
 
 export default function SearchPage() {
   return (
-    <Suspense
-      fallback={
-        <div className="max-w-7xl mx-auto px-4 py-16 text-center text-xs font-semibold text-text-secondary">
-          Loading search...
-        </div>
-      }
-    >
+    <Suspense>
       <SearchContent />
     </Suspense>
   );

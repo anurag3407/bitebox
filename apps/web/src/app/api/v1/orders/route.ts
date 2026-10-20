@@ -1,19 +1,25 @@
-import { NextRequest } from "next/server";
+import { z } from "zod";
 import { OrderRepository } from "@startup/database";
-import { apiError, apiSuccess } from "@/server/api-response";
-import { getAuthenticatedActor, getOrCreateDbUser } from "@/server/auth-guard";
+import { apiSuccess } from "@/server/api-response";
+import { requireAuth } from "@/server/auth-guard";
+import { parseQuery, route } from "@/server/route";
 
-export async function GET(req: NextRequest) {
-  try {
-    const actor = await getAuthenticatedActor(req);
-    if (!actor) {
-      return apiError("UNAUTHENTICATED", "Authentication required", 401);
-    }
+const QuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+  // Cursor: createdAt of the last order on the previous page
+  before: z.string().datetime().optional(),
+});
 
-    const user = await getOrCreateDbUser(actor);
-    const orders = await OrderRepository.listByCustomer(user.id);
-    return apiSuccess(orders);
-  } catch (err: any) {
-    return apiError("INTERNAL_ERROR", err.message || "Failed to list orders", 500);
-  }
-}
+export const GET = route(async (req, _ctx, requestId) => {
+  const auth = await requireAuth(req);
+  const { limit, before } = parseQuery(req, QuerySchema);
+  const orders = await OrderRepository.listByCustomer(auth.user.id, {
+    limit,
+    before: before ? new Date(before) : undefined,
+  });
+  const last = orders[orders.length - 1];
+  return apiSuccess(orders, 200, {
+    requestId,
+    headers: orders.length === limit && last ? { "x-next-cursor": last.createdAt } : {},
+  });
+});

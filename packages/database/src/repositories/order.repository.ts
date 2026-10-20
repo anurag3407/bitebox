@@ -1,29 +1,43 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import type { PoolClient } from "pg";
 import {
   FulfillmentState,
   OrderDetailDto,
   OrderSummaryDto,
-  PaymentAttemptStatus,
   PaymentStatus,
   QuoteBreakdown,
   QuoteLineBreakdown,
 } from "@startup/contracts";
-import { OrderStateMachine } from "@startup/core";
-import { getDb, getDbPool } from "../client.js";
 import {
-  customerAddresses,
-  idempotencyRecords,
-  jobs,
-  orderEvents,
-  orders,
-  outboxEvents,
-  paymentAttempts,
-  payments,
-  restaurants,
-} from "../schema/schema.js";
-
-import { LedgerEngine } from "@startup/core";
+  CancellationActor,
+  CancellationPolicy,
+  DomainError,
+  LedgerEngine,
+  LedgerAccountType,
+  OrderStateMachine,
+} from "@startup/core";
+import { getDbPool, withTransaction } from "../client.js";
+import { CouponRepository } from "./coupon.repository.js";
+import { JobKind, JobRepository } from "./job.repository.js";
 import { LedgerRepository } from "./ledger.repository.js";
+import { OutboxRepository } from "./outbox.repository.js";
+import { RefundRepository } from "./refund.repository.js";
+
+type Queryable = Pick<PoolClient, "query">;
+
+export type OrderActorType = "CUSTOMER" | "MERCHANT" | "RIDER" | "ADMIN" | "SYSTEM";
+
+export const MERCHANT_ACCEPTANCE_WINDOW_SECONDS = 90;
+export const PAYMENT_WINDOW_MINUTES = 15;
+
+export interface DeliveryAddressSnapshot {
+  label?: string;
+  building: string;
+  street: string;
+  landmark?: string;
+  latitude: number;
+  longitude: number;
+  contactPhone?: string;
+}
 
 export interface CreateOrderParams {
   idempotencyKey: string;
@@ -42,145 +56,282 @@ export interface CreateOrderParams {
   estimatedDeliveryMinutes: number;
   razorpayOrderId: string;
   quoteId?: string;
+  couponCode?: string;
+  deliveryAddressSnapshot?: DeliveryAddressSnapshot;
 }
 
+export interface CheckoutResult {
+  orderId: string;
+  orderNumber: string;
+  paymentAttemptId: string;
+  razorpayOrderId: string;
+  payablePaise: number;
+  isDuplicate: boolean;
+}
+
+export interface LockedOrderRow {
+  id: string;
+  order_number: string;
+  customer_id: string;
+  restaurant_id: string;
+  fulfillment_state: FulfillmentState;
+  payment_status: PaymentStatus;
+  payable_paise: number;
+  breakdown_json: QuoteBreakdown;
+  version: number;
+  prep_time_minutes: number | null;
+}
+
+// Timestamp column stamped when an order enters a state
+const STATE_TIMESTAMP_COLUMN: Partial<Record<FulfillmentState, string>> = {
+  [FulfillmentState.ACCEPTED]: "accepted_at",
+  [FulfillmentState.READY_FOR_PICKUP]: "ready_at",
+  [FulfillmentState.PICKED_UP]: "picked_up_at",
+  [FulfillmentState.DELIVERED]: "delivered_at",
+  [FulfillmentState.CANCELLED]: "cancelled_at",
+  [FulfillmentState.DELIVERY_FAILED]: "cancelled_at",
+};
+
+function isUniqueViolation(err: unknown, constraint?: string): boolean {
+  const e = err as { code?: string; constraint?: string };
+  return e?.code === "23505" && (!constraint || e.constraint === constraint);
+}
+
+function mapDetailRow(row: any): OrderDetailDto {
+  const snapshot = (row.delivery_address_snapshot ?? null) as DeliveryAddressSnapshot | null;
+  const breakdown = row.breakdown_json as QuoteBreakdown & { quoteId?: string };
+  const state = row.fulfillment_state as FulfillmentState;
+  const { quoteId: _quoteId, ...publicBreakdown } = breakdown;
+  return {
+    orderId: row.id,
+    orderNumber: row.order_number,
+    customerId: row.customer_id,
+    restaurant: {
+      id: row.restaurant_id,
+      name: row.restaurant_name,
+      phone: row.restaurant_phone ?? undefined,
+      heroImageUrl: row.restaurant_hero_image_url ?? undefined,
+    },
+    // Orders keep the address as it was at checkout even if the customer edits it later
+    deliveryAddress: {
+      building: snapshot?.building ?? row.address_building,
+      street: snapshot?.street ?? row.address_street,
+      landmark: (snapshot?.landmark ?? row.address_landmark) || undefined,
+      latitude: snapshot?.latitude ?? row.address_latitude,
+      longitude: snapshot?.longitude ?? row.address_longitude,
+      contactPhone: (snapshot?.contactPhone ?? row.address_contact_phone) || undefined,
+    },
+    items: row.items_json as QuoteLineBreakdown[],
+    breakdown: { ...publicBreakdown, tipPaise: publicBreakdown.tipPaise ?? 0 },
+    fulfillmentState: state,
+    paymentStatus: row.payment_status as PaymentStatus,
+    createdAt: row.created_at.toISOString(),
+    merchantResponseDeadlineAt: row.merchant_response_deadline_at?.toISOString(),
+    promisedDeliveryAt: row.promised_delivery_at?.toISOString(),
+    currentEtaMinutes: row.promised_delivery_at
+      ? Math.max(1, Math.ceil((row.promised_delivery_at.getTime() - Date.now()) / 60000))
+      : undefined,
+    deliveryOtp: row.delivery_otp,
+    pickupCode: row.pickup_otp,
+    instructions: row.instructions ?? undefined,
+    couponCode: row.coupon_code ?? undefined,
+    prepTimeMinutes: row.prep_time_minutes ?? undefined,
+    cancellationReason: row.cancellation_reason ?? undefined,
+    acceptedAt: row.accepted_at?.toISOString(),
+    readyAt: row.ready_at?.toISOString(),
+    pickedUpAt: row.picked_up_at?.toISOString(),
+    deliveredAt: row.delivered_at?.toISOString(),
+    cancelledAt: row.cancelled_at?.toISOString(),
+    refundedPaise: row.refunded_paise ?? 0,
+    rider: row.rider_name
+      ? { name: row.rider_name, phone: row.rider_phone ?? undefined, vehicleType: row.rider_vehicle_type ?? undefined }
+      : undefined,
+    rating: row.food_rating
+      ? {
+          foodRating: row.food_rating,
+          deliveryRating: row.delivery_rating ?? undefined,
+          comment: row.rating_comment ?? undefined,
+        }
+      : undefined,
+    canCancel: CancellationPolicy.evaluate("CUSTOMER", state).allowed,
+    canRate: state === FulfillmentState.DELIVERED && !row.food_rating,
+  };
+}
+
+const DETAIL_SELECT = `
+  SELECT o.*,
+         r.name AS restaurant_name, r.phone AS restaurant_phone, r.hero_image_url AS restaurant_hero_image_url,
+         r.slug AS restaurant_slug,
+         a.building AS address_building, a.street AS address_street, a.landmark AS address_landmark,
+         a.latitude AS address_latitude, a.longitude AS address_longitude, a.contact_phone AS address_contact_phone,
+         rd.name AS rider_name, rd.phone AS rider_phone, rd.vehicle_type AS rider_vehicle_type,
+         rt.food_rating, rt.delivery_rating, rt.comment AS rating_comment
+    FROM orders o
+    JOIN restaurants r ON r.id = o.restaurant_id
+    JOIN customer_addresses a ON a.id = o.delivery_address_id
+    LEFT JOIN LATERAL (
+      SELECT rider_id FROM delivery_assignments da
+       WHERE da.order_id = o.id AND da.status <> 'CANCELLED'
+       ORDER BY da.assigned_at DESC LIMIT 1
+    ) last_trip ON true
+    LEFT JOIN riders rd ON rd.id = last_trip.rider_id
+    LEFT JOIN order_ratings rt ON rt.order_id = o.id`;
+
 export class OrderRepository {
-  static async createWithIdempotency(params: CreateOrderParams): Promise<{
-    orderId: string;
-    orderNumber: string;
-    paymentAttemptId: string;
-    razorpayOrderId: string;
-    isDuplicate: boolean;
-  }> {
-    const pool = getDbPool();
-    const client = await pool.connect();
+  static async findCompletedCheckout(principalId: string, idempotencyKey: string, requestHash: string) {
+    const res = await getDbPool().query(
+      `SELECT response_json, request_hash, status FROM idempotency_records
+        WHERE principal_id = $1 AND operation = 'CHECKOUT' AND idempotency_key = $2`,
+      [principalId, idempotencyKey]
+    );
+    const row = res.rows[0];
+    if (!row) return null;
+    if (row.request_hash !== requestHash) {
+      throw new DomainError("IDEMPOTENCY_CONFLICT", "Idempotency key reused with a different request payload");
+    }
+    return row.status === "COMPLETED" ? ({ ...row.response_json, isDuplicate: true } as CheckoutResult) : null;
+  }
 
+  /**
+   * Creates the order, its first event, the payment attempt, the coupon reservation and
+   * the payment-expiry job in one transaction, keyed by (principal, idempotency key).
+   * Concurrent duplicates block on the idempotency row and then return the first result.
+   */
+  static async createWithIdempotency(params: CreateOrderParams): Promise<CheckoutResult> {
     try {
-      await client.query("BEGIN");
+      return await withTransaction(async (client) => {
+        const inserted = await client.query(
+          `INSERT INTO idempotency_records (id, principal_id, operation, idempotency_key, request_hash, status)
+           VALUES (gen_random_uuid(), $1, 'CHECKOUT', $2, $3, 'PROCESSING')
+           ON CONFLICT (principal_id, operation, idempotency_key) DO NOTHING
+           RETURNING id`,
+          [params.principalId, params.idempotencyKey, params.requestHash]
+        );
 
-      // 1. Check idempotency record
-      const idemRes = await client.query(
-        `SELECT response_json, status, request_hash FROM idempotency_records
-         WHERE principal_id = $1 AND operation = 'CHECKOUT' AND idempotency_key = $2
-         FOR UPDATE`,
-        [params.principalId, params.idempotencyKey]
-      );
-
-      if (idemRes.rows.length > 0) {
-        if (idemRes.rows[0].request_hash !== params.requestHash) {
-          throw new Error("IDEMPOTENCY_CONFLICT: Idempotency key reused with different request payload");
+        if (inserted.rows.length === 0) {
+          const existing = await client.query(
+            `SELECT response_json, status, request_hash FROM idempotency_records
+              WHERE principal_id = $1 AND operation = 'CHECKOUT' AND idempotency_key = $2`,
+            [params.principalId, params.idempotencyKey]
+          );
+          const row = existing.rows[0];
+          if (row.request_hash !== params.requestHash) {
+            throw new DomainError("IDEMPOTENCY_CONFLICT", "Idempotency key reused with a different request payload");
+          }
+          if (row.status === "COMPLETED") {
+            return { ...row.response_json, isDuplicate: true } as CheckoutResult;
+          }
+          throw new DomainError("CONFLICT", "This checkout is already being processed. Please retry shortly.");
         }
-        if (idemRes.rows[0].status === "COMPLETED") {
-          await client.query("COMMIT");
-          return {
-            ...idemRes.rows[0].response_json,
-            isDuplicate: true,
-          };
-        }
-      }
 
-      // Record processing idempotency
-      await client.query(
-        `INSERT INTO idempotency_records (id, principal_id, operation, idempotency_key, request_hash, status)
-         VALUES (gen_random_uuid(), $1, 'CHECKOUT', $2, $3, 'PROCESSING')
-         ON CONFLICT (principal_id, operation, idempotency_key) DO NOTHING`,
-        [params.principalId, params.idempotencyKey, params.requestHash]
-      );
+        const promisedAt = new Date(Date.now() + params.estimatedDeliveryMinutes * 60 * 1000);
+        const orderRes = await client.query(
+          `INSERT INTO orders (
+             id, order_number, customer_id, restaurant_id, delivery_address_id,
+             items_json, breakdown_json, fulfillment_state, payment_status,
+             payable_paise, delivery_otp, pickup_otp, instructions, promised_delivery_at,
+             quote_id, coupon_code, delivery_address_snapshot
+           ) VALUES (
+             gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'PENDING_PAYMENT', 'PENDING',
+             $7, $8, $9, $10, $11, $12, $13, $14
+           ) RETURNING id`,
+          [
+            params.orderNumber,
+            params.customerId,
+            params.restaurantId,
+            params.deliveryAddressId,
+            JSON.stringify(params.items),
+            JSON.stringify({ ...params.breakdown, quoteId: params.quoteId }),
+            params.payablePaise,
+            params.deliveryOtp,
+            params.pickupOtp,
+            params.instructions ?? null,
+            promisedAt.toISOString(),
+            params.quoteId ?? null,
+            params.couponCode ?? null,
+            params.deliveryAddressSnapshot ? JSON.stringify(params.deliveryAddressSnapshot) : null,
+          ]
+        );
+        const orderId: string = orderRes.rows[0].id;
 
-      // 2. Insert Order
-      const promisedAt = new Date(Date.now() + params.estimatedDeliveryMinutes * 60 * 1000);
-      const breakdownToStore = {
-        ...params.breakdown,
-        quoteId: params.quoteId ?? (params.breakdown as any).quoteId,
-      };
+        await client.query(
+          `INSERT INTO order_events (id, order_id, sequence, source_state, target_state, actor_type, actor_id, reason)
+           VALUES (gen_random_uuid(), $1, 1, 'NONE', 'PENDING_PAYMENT', 'CUSTOMER', $2, 'Order initiated by customer')`,
+          [orderId, params.customerId]
+        );
 
-      const orderRes = await client.query(
-        `INSERT INTO orders (
-           id, order_number, customer_id, restaurant_id, delivery_address_id,
-           items_json, breakdown_json, fulfillment_state, payment_status,
-           payable_paise, delivery_otp, pickup_otp, instructions, promised_delivery_at
-         ) VALUES (
-           gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'PENDING_PAYMENT', 'PENDING',
-           $7, $8, $9, $10, $11
-         ) RETURNING id`,
-        [
-          params.orderNumber,
-          params.customerId,
-          params.restaurantId,
-          params.deliveryAddressId,
-          JSON.stringify(params.items),
-          JSON.stringify(breakdownToStore),
-          params.payablePaise,
-          params.deliveryOtp,
-          params.pickupOtp,
-          params.instructions ?? null,
-          promisedAt.toISOString(),
-        ]
-      );
-      const orderId = orderRes.rows[0].id;
-
-      // 3. Insert Initial Order Event
-      await client.query(
-        `INSERT INTO order_events (id, order_id, sequence, source_state, target_state, actor_type, actor_id, reason)
-         VALUES (gen_random_uuid(), $1, 1, 'NONE', 'PENDING_PAYMENT', 'CUSTOMER', $2, 'Order initiated by customer')`,
-        [orderId, params.customerId]
-      );
-
-      // 4. Insert Payment Attempt
-      const attemptRes = await client.query(
-        `INSERT INTO payment_attempts (id, order_id, razorpay_order_id, status, amount_paise, currency)
-         VALUES (gen_random_uuid(), $1, $2, 'READY', $3, 'INR')
-         RETURNING id`,
-        [orderId, params.razorpayOrderId, params.payablePaise]
-      );
-      const paymentAttemptId = attemptRes.rows[0].id;
-
-      // 5. Insert Outbox Event
-      await client.query(
-        `INSERT INTO outbox_events (id, event_type, aggregate_id, aggregate_version, payload_json, status)
-         VALUES (gen_random_uuid(), 'order.created', $1, 1, $2, 'PENDING')`,
-        [
-          orderId,
-          JSON.stringify({
+        if (params.couponCode && params.breakdown.discountPaise > 0) {
+          // Lock the coupon so usage limits are checked race-free across concurrent checkouts
+          const coupon = await CouponRepository.findByCode(params.couponCode, client, true);
+          const eligibility = await CouponRepository.checkEligibility(client, coupon, {
+            userId: params.customerId,
+            restaurantId: params.restaurantId,
+          });
+          if (!eligibility.ok || !coupon) {
+            throw new DomainError("COUPON_INVALID", eligibility.ok ? "Coupon is no longer valid." : eligibility.reason);
+          }
+          await CouponRepository.reserveWithClient(client, {
+            couponId: coupon.id,
+            userId: params.customerId,
             orderId,
-            orderNumber: params.orderNumber,
-            payablePaise: params.payablePaise,
-          }),
-        ]
-      );
+            discountPaise: params.breakdown.discountPaise,
+          });
+        }
 
-      const responsePayload = {
-        orderId,
-        orderNumber: params.orderNumber,
-        paymentAttemptId,
-        razorpayOrderId: params.razorpayOrderId,
-      };
+        const attemptRes = await client.query(
+          `INSERT INTO payment_attempts (id, order_id, razorpay_order_id, status, amount_paise, currency)
+           VALUES (gen_random_uuid(), $1, $2, 'READY', $3, 'INR')
+           RETURNING id`,
+          [orderId, params.razorpayOrderId, params.payablePaise]
+        );
+        const paymentAttemptId: string = attemptRes.rows[0].id;
 
-      // 6. Complete Idempotency record
-      await client.query(
-        `UPDATE idempotency_records
-         SET status = 'COMPLETED', response_json = $1
-         WHERE principal_id = $2 AND operation = 'CHECKOUT' AND idempotency_key = $3`,
-        [JSON.stringify(responsePayload), params.principalId, params.idempotencyKey]
-      );
+        await OutboxRepository.appendWithClient(client, "order.created", orderId, 1, {
+          orderId,
+          orderNumber: params.orderNumber,
+          customerId: params.customerId,
+          restaurantId: params.restaurantId,
+          payablePaise: params.payablePaise,
+        });
 
-      await client.query("COMMIT");
+        // Unpaid orders are reconciled with the gateway and then expired
+        await JobRepository.enqueueWithClient(client, JobKind.PAYMENT_EXPIRY, { orderId }, {
+          runAt: new Date(Date.now() + PAYMENT_WINDOW_MINUTES * 60 * 1000),
+          dedupeKey: `payment-expiry:${orderId}`,
+        });
 
-      return {
-        ...responsePayload,
-        isDuplicate: false,
-      };
+        const responsePayload: Omit<CheckoutResult, "isDuplicate"> = {
+          orderId,
+          orderNumber: params.orderNumber,
+          paymentAttemptId,
+          razorpayOrderId: params.razorpayOrderId,
+          payablePaise: params.payablePaise,
+        };
+
+        await client.query(
+          `UPDATE idempotency_records
+           SET status = 'COMPLETED', response_json = $1
+           WHERE principal_id = $2 AND operation = 'CHECKOUT' AND idempotency_key = $3`,
+          [JSON.stringify(responsePayload), params.principalId, params.idempotencyKey]
+        );
+
+        return { ...responsePayload, isDuplicate: false };
+      });
     } catch (err) {
-      await client.query("ROLLBACK");
+      if (isUniqueViolation(err, "uq_orders_quote")) {
+        throw new DomainError("CONFLICT", "An order has already been placed for this quote.");
+      }
+      if (isUniqueViolation(err, "orders_order_number_key")) {
+        throw new DomainError("CONFLICT", "ORDER_NUMBER_COLLISION");
+      }
       throw err;
-    } finally {
-      client.release();
     }
   }
 
   static async findOrderByQuote(quoteId: string): Promise<{
     id: string;
     orderNumber: string;
+    customerId: string;
     fulfillmentState: string;
     paymentStatus: string;
     payablePaise: number;
@@ -188,15 +339,15 @@ export class OrderRepository {
     razorpayOrderId?: string;
     attemptStatus?: string;
   } | null> {
-    const pool = getDbPool();
-    const res = await pool.query(
-      `SELECT o.id, o.order_number, o.fulfillment_state, o.payment_status, o.payable_paise,
+    const res = await getDbPool().query(
+      `SELECT o.id, o.order_number, o.customer_id, o.fulfillment_state, o.payment_status, o.payable_paise,
               pa.id as payment_attempt_id, pa.razorpay_order_id, pa.status as attempt_status
        FROM orders o
-       LEFT JOIN payment_attempts pa ON pa.order_id = o.id
-       WHERE o.breakdown_json->>'quoteId' = $1
-       ORDER BY o.created_at DESC
-       LIMIT 1`,
+       LEFT JOIN LATERAL (
+         SELECT id, razorpay_order_id, status FROM payment_attempts
+          WHERE order_id = o.id ORDER BY created_at DESC LIMIT 1
+       ) pa ON true
+       WHERE o.quote_id = $1`,
       [quoteId]
     );
     if (res.rows.length === 0) return null;
@@ -204,352 +355,537 @@ export class OrderRepository {
     return {
       id: row.id,
       orderNumber: row.order_number,
+      customerId: row.customer_id,
       fulfillmentState: row.fulfillment_state,
       paymentStatus: row.payment_status,
       payablePaise: row.payable_paise,
-      paymentAttemptId: row.payment_attempt_id,
-      razorpayOrderId: row.razorpay_order_id,
-      attemptStatus: row.attempt_status,
+      paymentAttemptId: row.payment_attempt_id ?? undefined,
+      razorpayOrderId: row.razorpay_order_id ?? undefined,
+      attemptStatus: row.attempt_status ?? undefined,
     };
   }
 
   static async findById(orderId: string): Promise<OrderDetailDto | null> {
-    const db = getDb();
-    const [row] = await db
-      .select({
-        order: orders,
-        restaurant: restaurants,
-        address: customerAddresses,
-      })
-      .from(orders)
-      .innerJoin(restaurants, eq(orders.restaurantId, restaurants.id))
-      .innerJoin(customerAddresses, eq(orders.deliveryAddressId, customerAddresses.id))
-      .where(eq(orders.id, orderId))
-      .limit(1);
+    const res = await getDbPool().query(`${DETAIL_SELECT} WHERE o.id = $1`, [orderId]);
+    return res.rows[0] ? mapDetailRow(res.rows[0]) : null;
+  }
 
+  static async findAccessContext(orderId: string): Promise<{
+    customerId: string;
+    restaurantId: string;
+    fulfillmentState: FulfillmentState;
+    riderUserIds: string[];
+  } | null> {
+    const res = await getDbPool().query(
+      `SELECT o.customer_id, o.restaurant_id, o.fulfillment_state,
+              COALESCE(ARRAY(
+                SELECT rd.user_id FROM delivery_assignments da JOIN riders rd ON rd.id = da.rider_id
+                 WHERE da.order_id = o.id AND da.status <> 'CANCELLED'
+                UNION
+                SELECT rd.user_id FROM delivery_offers d JOIN riders rd ON rd.id = d.rider_id
+                 WHERE d.order_id = o.id AND d.status = 'OFFERED'
+              ), '{}') AS rider_user_ids
+         FROM orders o WHERE o.id = $1`,
+      [orderId]
+    );
+    const row = res.rows[0];
     if (!row) return null;
-
     return {
-      orderId: row.order.id,
-      orderNumber: row.order.orderNumber,
-      customerId: row.order.customerId,
-      restaurant: {
-        id: row.restaurant.id,
-        name: row.restaurant.name,
-        phone: row.restaurant.phone ?? undefined,
-        heroImageUrl: row.restaurant.heroImageUrl ?? undefined,
-      },
-      deliveryAddress: {
-        building: row.address.building,
-        street: row.address.street,
-        landmark: row.address.landmark ?? undefined,
-        latitude: row.address.latitude,
-        longitude: row.address.longitude,
-        contactPhone: row.address.contactPhone ?? undefined,
-      },
-      items: row.order.itemsJson as QuoteLineBreakdown[],
-      breakdown: row.order.breakdownJson as QuoteBreakdown,
-      fulfillmentState: row.order.fulfillmentState as FulfillmentState,
-      paymentStatus: row.order.paymentStatus as PaymentStatus,
-      createdAt: row.order.createdAt.toISOString(),
-      merchantResponseDeadlineAt: row.order.merchantResponseDeadlineAt?.toISOString(),
-      promisedDeliveryAt: row.order.promisedDeliveryAt?.toISOString(),
-      currentEtaMinutes: 30,
-      deliveryOtp: row.order.deliveryOtp,
+      customerId: row.customer_id,
+      restaurantId: row.restaurant_id,
+      fulfillmentState: row.fulfillment_state,
+      riderUserIds: row.rider_user_ids,
     };
   }
 
-  static async listByCustomer(customerId: string): Promise<OrderSummaryDto[]> {
-    const db = getDb();
-    const rows = await db
-      .select({
-        order: orders,
-        restaurant: restaurants,
-      })
-      .from(orders)
-      .innerJoin(restaurants, eq(orders.restaurantId, restaurants.id))
-      .where(eq(orders.customerId, customerId))
-      .orderBy(desc(orders.createdAt));
+  static async listByCustomer(
+    customerId: string,
+    options: { limit?: number; before?: Date } = {}
+  ): Promise<OrderSummaryDto[]> {
+    const limit = Math.min(Math.max(options.limit ?? 20, 1), 50);
+    const res = await getDbPool().query(
+      `SELECT o.id, o.order_number, o.restaurant_id, o.fulfillment_state, o.payment_status, o.payable_paise,
+              o.created_at, o.promised_delivery_at, o.items_json,
+              r.name AS restaurant_name, r.slug AS restaurant_slug, r.hero_image_url,
+              rt.food_rating
+         FROM orders o
+         JOIN restaurants r ON r.id = o.restaurant_id
+         LEFT JOIN order_ratings rt ON rt.order_id = o.id
+        WHERE o.customer_id = $1
+          -- Abandoned unpaid carts are noise in order history
+          AND NOT (o.fulfillment_state = 'CANCELLED' AND o.payment_status = 'PENDING')
+          AND ($2::timestamptz IS NULL OR o.created_at < $2::timestamptz)
+        ORDER BY o.created_at DESC
+        LIMIT $3`,
+      [customerId, options.before?.toISOString() ?? null, limit]
+    );
 
-    return rows.map((r) => {
-      const items = (r.order.itemsJson as any[]) || [];
-      const totalCount = items.reduce((sum, item) => sum + (item.quantity || 1), 0);
+    return res.rows.map((r) => {
+      const items = (r.items_json as QuoteLineBreakdown[]) || [];
       return {
-        orderId: r.order.id,
-        orderNumber: r.order.orderNumber,
-        restaurantId: r.restaurant.id,
-        restaurantName: r.restaurant.name,
-        fulfillmentState: r.order.fulfillmentState as FulfillmentState,
-        payablePaise: r.order.payablePaise,
-        createdAt: r.order.createdAt.toISOString(),
-        promisedDeliveryAt: r.order.promisedDeliveryAt?.toISOString(),
-        itemCount: totalCount,
+        orderId: r.id,
+        orderNumber: r.order_number,
+        restaurantId: r.restaurant_id,
+        restaurantName: r.restaurant_name,
+        restaurantSlug: r.restaurant_slug,
+        restaurantImageUrl: r.hero_image_url ?? undefined,
+        fulfillmentState: r.fulfillment_state as FulfillmentState,
+        paymentStatus: r.payment_status as PaymentStatus,
+        payablePaise: r.payable_paise,
+        createdAt: r.created_at.toISOString(),
+        promisedDeliveryAt: r.promised_delivery_at?.toISOString(),
+        itemCount: Math.max(1, items.reduce((sum, item) => sum + (item.quantity || 1), 0)),
+        itemsPreview: items.map((i) => `${i.quantity} x ${i.name}`).join(", ").slice(0, 120),
+        rating: r.food_rating ?? undefined,
       };
     });
   }
 
   static async listByRestaurant(
     restaurantId: string,
-    states?: FulfillmentState[]
+    states?: FulfillmentState[],
+    options: { sinceHours?: number; limit?: number } = {}
   ): Promise<OrderDetailDto[]> {
-    const db = getDb();
-    const conditions = [eq(orders.restaurantId, restaurantId)];
-    if (states && states.length > 0) {
-      conditions.push(inArray(orders.fulfillmentState, states));
-    }
-
-    const rows = await db
-      .select({
-        order: orders,
-        restaurant: restaurants,
-        address: customerAddresses,
-      })
-      .from(orders)
-      .innerJoin(restaurants, eq(orders.restaurantId, restaurants.id))
-      .innerJoin(customerAddresses, eq(orders.deliveryAddressId, customerAddresses.id))
-      .where(and(...conditions))
-      .orderBy(desc(orders.createdAt));
-
-    return rows.map((r) => ({
-      orderId: r.order.id,
-      orderNumber: r.order.orderNumber,
-      restaurant: {
-        id: r.restaurant.id,
-        name: r.restaurant.name,
-        phone: r.restaurant.phone ?? undefined,
-        heroImageUrl: r.restaurant.heroImageUrl ?? undefined,
-      },
-      deliveryAddress: {
-        building: r.address.building,
-        street: r.address.street,
-        landmark: r.address.landmark ?? undefined,
-        latitude: r.address.latitude,
-        longitude: r.address.longitude,
-      },
-      items: r.order.itemsJson as QuoteLineBreakdown[],
-      breakdown: r.order.breakdownJson as QuoteBreakdown,
-      fulfillmentState: r.order.fulfillmentState as FulfillmentState,
-      paymentStatus: r.order.paymentStatus as PaymentStatus,
-      createdAt: r.order.createdAt.toISOString(),
-      merchantResponseDeadlineAt: r.order.merchantResponseDeadlineAt?.toISOString(),
-      promisedDeliveryAt: r.order.promisedDeliveryAt?.toISOString(),
-      deliveryOtp: r.order.deliveryOtp,
-    }));
+    const res = await getDbPool().query(
+      `${DETAIL_SELECT}
+        WHERE o.restaurant_id = $1
+          AND ($2::text[] IS NULL OR o.fulfillment_state = ANY($2::text[]))
+          AND o.fulfillment_state <> 'PENDING_PAYMENT'
+          AND o.created_at > NOW() - make_interval(hours => $3)
+        ORDER BY o.created_at DESC
+        LIMIT $4`,
+      [restaurantId, states && states.length > 0 ? states : null, options.sinceHours ?? 24, options.limit ?? 100]
+    );
+    return res.rows.map(mapDetailRow);
   }
 
+  static async lockForUpdate(client: Queryable, orderId: string): Promise<LockedOrderRow> {
+    const res = await client.query(
+      `SELECT id, order_number, customer_id, restaurant_id, fulfillment_state, payment_status,
+              payable_paise, breakdown_json, version, prep_time_minutes
+         FROM orders WHERE id = $1 FOR UPDATE`,
+      [orderId]
+    );
+    if (res.rows.length === 0) throw new DomainError("NOT_FOUND", "Order not found");
+    return res.rows[0];
+  }
+
+  /**
+   * Moves a locked order to a new fulfillment state, stamping lifecycle timestamps,
+   * bumping the version and recording a gapless event + outbox message.
+   * The caller must hold the row lock (see lockForUpdate) inside `client`'s transaction.
+   */
+  static async transitionLockedWithClient(
+    client: Queryable,
+    order: LockedOrderRow,
+    input: {
+      toState: FulfillmentState;
+      actorType: OrderActorType;
+      actorId?: string;
+      reason?: string;
+      extra?: Record<string, unknown>;
+    }
+  ): Promise<LockedOrderRow> {
+    const check = OrderStateMachine.canTransition(order.fulfillment_state, input.toState);
+    if (!check.allowed) {
+      throw new DomainError("STATE_CONFLICT", check.error ?? "Invalid order state transition", {
+        details: { currentState: order.fulfillment_state, requestedState: input.toState },
+      });
+    }
+    if (order.fulfillment_state === input.toState) return order;
+
+    const stampColumn = STATE_TIMESTAMP_COLUMN[input.toState];
+    const isTerminalFailure =
+      input.toState === FulfillmentState.CANCELLED || input.toState === FulfillmentState.DELIVERY_FAILED;
+    const newVersion = order.version + 1;
+
+    await client.query(
+      `UPDATE orders
+          SET fulfillment_state = $2,
+              version = $3,
+              updated_at = NOW()
+              ${stampColumn ? `, ${stampColumn} = NOW()` : ""}
+              ${isTerminalFailure ? ", cancellation_reason = $4" : ""}
+        WHERE id = $1`,
+      isTerminalFailure
+        ? [order.id, input.toState, newVersion, input.reason ?? null]
+        : [order.id, input.toState, newVersion]
+    );
+
+    await client.query(
+      `INSERT INTO order_events (id, order_id, sequence, source_state, target_state, actor_type, actor_id, reason)
+       SELECT gen_random_uuid(), $1, COALESCE(MAX(sequence), 0) + 1, $2, $3, $4, $5, $6
+         FROM order_events WHERE order_id = $1`,
+      [order.id, order.fulfillment_state, input.toState, input.actorType, input.actorId ?? null, input.reason ?? null]
+    );
+
+    await OutboxRepository.appendWithClient(client, `order.${input.toState.toLowerCase()}`, order.id, newVersion, {
+      orderId: order.id,
+      orderNumber: order.order_number,
+      customerId: order.customer_id,
+      restaurantId: order.restaurant_id,
+      fromState: order.fulfillment_state,
+      state: input.toState,
+      reason: input.reason,
+      ...input.extra,
+    });
+
+    return { ...order, fulfillment_state: input.toState, version: newVersion };
+  }
+
+  /** Locks the order, asserts it is in one of `fromStates`, and transitions it. */
+  static async updateFulfillmentState(input: {
+    orderId: string;
+    fromState: FulfillmentState | FulfillmentState[];
+    toState: FulfillmentState;
+    actorType: OrderActorType;
+    actorId?: string;
+    reason?: string;
+  }): Promise<void> {
+    await withTransaction(async (client) => {
+      const order = await OrderRepository.lockForUpdate(client, input.orderId);
+      const allowed = Array.isArray(input.fromState) ? input.fromState : [input.fromState];
+      if (!allowed.includes(order.fulfillment_state)) {
+        throw new DomainError(
+          "STATE_CONFLICT",
+          `Order is ${order.fulfillment_state.toLowerCase().replace(/_/g, " ")}; expected ${allowed
+            .map((s) => s.toLowerCase().replace(/_/g, " "))
+            .join(" or ")}.`,
+          { details: { currentState: order.fulfillment_state } }
+        );
+      }
+      await OrderRepository.transitionLockedWithClient(client, order, input);
+    });
+  }
+
+  /**
+   * Restaurant accepts: records the prep promise, re-promises the delivery time and
+   * schedules dispatch so a rider arrives as food is ready (not idle at the counter).
+   */
+  static async acceptByMerchant(input: {
+    orderId: string;
+    prepTimeMinutes: number;
+    actorId: string;
+    travelToPickupMinutes?: number;
+    lastMileMinutes: number;
+  }): Promise<void> {
+    await withTransaction(async (client) => {
+      const order = await OrderRepository.lockForUpdate(client, input.orderId);
+      if (order.fulfillment_state !== FulfillmentState.AWAITING_MERCHANT) {
+        throw new DomainError("STATE_CONFLICT", "This order is no longer awaiting acceptance.", {
+          details: { currentState: order.fulfillment_state },
+        });
+      }
+      await OrderRepository.transitionLockedWithClient(client, order, {
+        toState: FulfillmentState.ACCEPTED,
+        actorType: "MERCHANT",
+        actorId: input.actorId,
+        reason: `Accepted with ${input.prepTimeMinutes} min preparation time`,
+        extra: { prepTimeMinutes: input.prepTimeMinutes },
+      });
+
+      const promised = new Date(Date.now() + (input.prepTimeMinutes + input.lastMileMinutes + 4) * 60_000);
+      await client.query(
+        `UPDATE orders SET prep_time_minutes = $2, promised_delivery_at = $3, merchant_response_deadline_at = NULL
+          WHERE id = $1`,
+        [order.id, input.prepTimeMinutes, promised.toISOString()]
+      );
+
+      // Start looking for a rider so they reach the store ~when food is ready
+      const leadMinutes = (input.travelToPickupMinutes ?? 8) + 2;
+      const dispatchDelayMs = Math.max(0, (input.prepTimeMinutes - leadMinutes) * 60_000);
+      await JobRepository.enqueueWithClient(client, JobKind.DISPATCH_ORDER, { orderId: order.id, attempt: 0 }, {
+        runAt: new Date(Date.now() + dispatchDelayMs),
+        dedupeKey: `dispatch:${order.id}:0`,
+      });
+    });
+  }
+
+  /**
+   * Records a gateway capture. Handles, in one transaction:
+   *  - replays of the same payment (idempotent no-op)
+   *  - amount/currency mismatches (refunded, order left unpaid)
+   *  - a second capture on an already-paid order (duplicate refunded)
+   *  - a capture arriving after the order was cancelled (refunded, order stays cancelled)
+   *  - the normal path: CAPTURED + AWAITING_MERCHANT with an acceptance deadline
+   */
   static async recordPaymentCapture(input: {
     orderId: string;
     providerPaymentId: string;
     amountPaise: number;
+    currency?: string;
     paymentAttemptId?: string;
-  }): Promise<void> {
-    const pool = getDbPool();
-    const client = await pool.connect();
+  }): Promise<{ outcome: "CAPTURED" | "ALREADY_RECORDED" | "DUPLICATE_REFUNDED" | "LATE_REFUNDED" | "MISMATCH_REFUNDED" }> {
+    return withTransaction(async (client) => {
+      const order = await OrderRepository.lockForUpdate(client, input.orderId);
 
-    try {
-      await client.query("BEGIN");
-
-      // 1. Lock Order for update
-      const orderRes = await client.query(
-        `SELECT id, fulfillment_state, payment_status, payable_paise, breakdown_json FROM orders WHERE id = $1 FOR UPDATE`,
-        [input.orderId]
-      );
-      if (orderRes.rows.length === 0) {
-        throw new Error(`Order ${input.orderId} not found`);
-      }
-      const order = orderRes.rows[0];
-
-      if (order.payment_status === "CAPTURED") {
-        await client.query("COMMIT");
-        return; // Idempotent capture acknowledgment
+      const existingPayment = await client.query(`SELECT id, order_id FROM payments WHERE provider_payment_id = $1`, [
+        input.providerPaymentId,
+      ]);
+      if (existingPayment.rows.length > 0) {
+        if (existingPayment.rows[0].order_id !== input.orderId) {
+          throw new DomainError("CONFLICT", "Payment is already linked to a different order");
+        }
+        return { outcome: "ALREADY_RECORDED" as const };
       }
 
-      // 2. Insert Payment Record
       const payRes = await client.query(
         `INSERT INTO payments (id, order_id, payment_attempt_id, provider_payment_id, status, amount_paise, currency)
-         VALUES (gen_random_uuid(), $1, $2, $3, 'CAPTURED', $4, 'INR')
-         ON CONFLICT (provider_payment_id) DO UPDATE SET status = 'CAPTURED'
+         VALUES (gen_random_uuid(), $1, $2, $3, 'CAPTURED', $4, $5)
          RETURNING id`,
-        [input.orderId, input.paymentAttemptId ?? null, input.providerPaymentId, input.amountPaise]
+        [input.orderId, input.paymentAttemptId ?? null, input.providerPaymentId, input.amountPaise, input.currency ?? "INR"]
       );
-      const paymentRecordId = payRes.rows[0]?.id;
+      const paymentId: string = payRes.rows[0].id;
 
-      // 3. Update payment attempt status if known
       if (input.paymentAttemptId) {
-        await client.query(
-          `UPDATE payment_attempts SET status = 'CAPTURED', updated_at = NOW() WHERE id = $1`,
-          [input.paymentAttemptId]
-        );
+        await client.query(`UPDATE payment_attempts SET status = 'CAPTURED', updated_at = NOW() WHERE id = $1`, [
+          input.paymentAttemptId,
+        ]);
       }
 
-      // 4. Post balanced double-entry accounting ledger entries for capture
-      const breakdown = order.breakdown_json as QuoteBreakdown;
-      if (breakdown) {
-        const captureEntries = LedgerEngine.buildOrderCaptureEntries({
+      const alreadyPaid = order.payment_status !== PaymentStatus.PENDING && order.payment_status !== PaymentStatus.FAILED;
+      const amountMismatch = input.amountPaise !== order.payable_paise || (input.currency ?? "INR") !== "INR";
+
+      if (alreadyPaid || amountMismatch) {
+        // Money we must hand back: hold it in refund clearing and refund this exact payment
+        await LedgerRepository.postTransactionWithClient(client, {
+          orderId: input.orderId,
+          paymentId,
+          effectType: "CAPTURE",
+          entries: [
+            {
+              account: LedgerAccountType.GATEWAY_CLEARING,
+              debitPaise: input.amountPaise,
+              creditPaise: 0,
+              description: alreadyPaid ? "Duplicate capture received" : "Capture with unexpected amount",
+            },
+            {
+              account: LedgerAccountType.REFUND_CLEARING,
+              debitPaise: 0,
+              creditPaise: input.amountPaise,
+              description: "Owed back to customer",
+            },
+          ],
+        });
+        await RefundRepository.issueWithClient(client, {
+          orderId: input.orderId,
+          paymentId,
+          reason: alreadyPaid
+            ? "Automatic refund: order was already paid (duplicate payment)"
+            : `Automatic refund: paid ${input.amountPaise} paise, expected ${order.payable_paise}`,
+          initiatedBy: "SYSTEM",
+          isDuplicateCapture: true,
+        });
+        await OutboxRepository.appendWithClient(client, "payment.anomaly", input.orderId, order.version, {
+          orderId: input.orderId,
+          providerPaymentId: input.providerPaymentId,
+          kind: alreadyPaid ? "DUPLICATE_CAPTURE" : "AMOUNT_MISMATCH",
+        });
+        return { outcome: alreadyPaid ? ("DUPLICATE_REFUNDED" as const) : ("MISMATCH_REFUNDED" as const) };
+      }
+
+      const commissionRes = await client.query(`SELECT commission_bp FROM restaurants WHERE id = $1`, [
+        order.restaurant_id,
+      ]);
+      const breakdown = order.breakdown_json;
+      await LedgerRepository.postTransactionWithClient(client, {
+        orderId: input.orderId,
+        paymentId,
+        effectType: "CAPTURE",
+        entries: LedgerEngine.buildOrderCaptureEntries({
           payablePaise: breakdown.payablePaise,
           subtotalPaise: breakdown.subtotalPaise,
           deliveryFeePaise: breakdown.deliveryFeePaise,
           platformFeePaise: breakdown.platformFeePaise,
           packagingPaise: breakdown.packagingPaise,
           taxPaise: breakdown.taxPaise,
-        });
-        await LedgerRepository.postTransactionWithClient(client, {
+          discountPaise: breakdown.discountPaise,
+          surgePaise: breakdown.surgePaise,
+          tipPaise: breakdown.tipPaise ?? 0,
+          commissionRateBasisPoints: commissionRes.rows[0]?.commission_bp ?? undefined,
+        }),
+      });
+      await client.query(`UPDATE orders SET payment_status = 'CAPTURED', updated_at = NOW() WHERE id = $1`, [order.id]);
+
+      if (OrderStateMachine.isTerminal(order.fulfillment_state)) {
+        // Late capture on a dead order: never resurrect it, give the money back
+        await RefundRepository.issueWithClient(client, {
           orderId: input.orderId,
-          paymentId: paymentRecordId,
-          effectType: "CAPTURE",
-          entries: captureEntries,
+          paymentId,
+          reason: "Late payment capture on cancelled order: automatic refund",
+          initiatedBy: "SYSTEM",
         });
+        await CouponRepository.releaseWithClient(client, input.orderId);
+        await OutboxRepository.appendWithClient(client, "order.late_capture_refunded", input.orderId, order.version, {
+          orderId: input.orderId,
+          paymentId: input.providerPaymentId,
+          amountPaise: input.amountPaise,
+        });
+        return { outcome: "LATE_REFUNDED" as const };
       }
 
-      // 5. Check if order was already cancelled or terminal: late capture handling!
-      if (order.fulfillment_state === "CANCELLED" || order.fulfillment_state === "DELIVERY_FAILED") {
-        // Late capture on cancelled order: DO NOT resurrect order to AWAITING_MERCHANT!
-        await client.query(
-          `UPDATE orders SET payment_status = 'CAPTURED', updated_at = NOW() WHERE id = $1`,
-          [input.orderId]
-        );
-
-        // Auto-create refund record for the late capture
-        const refundRes = await client.query(
-          `INSERT INTO refunds (id, order_id, payment_id, status, amount_paise, reason)
-           VALUES (gen_random_uuid(), $1, $2, 'APPROVED', $3, 'Late payment capture on cancelled order: automatic refund initiated')
-           RETURNING id`,
-          [input.orderId, paymentRecordId, input.amountPaise]
-        );
-        const refundId = refundRes.rows[0]?.id;
-
-        // Post balanced ledger entries for refund
-        const refundEntries = LedgerEngine.buildRefundEntries(
-          input.amountPaise,
-          "Late payment capture on cancelled order"
-        );
-        await LedgerRepository.postTransactionWithClient(client, {
-          orderId: input.orderId,
-          paymentId: paymentRecordId,
-          refundId,
-          effectType: "REFUND",
-          entries: refundEntries,
-        });
-
-        // Outbox event
-        await client.query(
-          `INSERT INTO outbox_events (id, event_type, aggregate_id, aggregate_version, payload_json, status)
-           VALUES (gen_random_uuid(), 'order.late_capture_refunded', $1, 2, $2, 'PENDING')`,
-          [input.orderId, JSON.stringify({ orderId: input.orderId, paymentId: input.providerPaymentId, amountPaise: input.amountPaise })]
-        );
-
-        await client.query("COMMIT");
-        return;
-      }
-
-      // 6. Normal flow: transition to AWAITING_MERCHANT with 90s deadline
-      const deadline = new Date(Date.now() + 90 * 1000);
-
-      await client.query(
-        `UPDATE orders
-         SET payment_status = 'CAPTURED',
-             fulfillment_state = 'AWAITING_MERCHANT',
-             merchant_response_deadline_at = $1,
-             updated_at = NOW()
-         WHERE id = $2`,
-        [deadline.toISOString(), input.orderId]
-      );
-
-      // Order Event
-      await client.query(
-        `INSERT INTO order_events (id, order_id, sequence, source_state, target_state, actor_type, actor_id, reason)
-         VALUES (gen_random_uuid(), $1, 2, 'PENDING_PAYMENT', 'AWAITING_MERCHANT', 'SYSTEM', 'PAYMENT_GATEWAY', 'Payment captured via Razorpay')`,
-        [input.orderId]
-      );
-
-      // Enqueue merchant acceptance timeout job (90 seconds)
-      await client.query(
-        `INSERT INTO jobs (id, kind, payload_json, status, run_at)
-         VALUES (gen_random_uuid(), 'MERCHANT_ACCEPTANCE_TIMEOUT', $1, 'PENDING', $2)`,
-        [JSON.stringify({ orderId: input.orderId }), deadline.toISOString()]
-      );
-
-      // Outbox Event
-      await client.query(
-        `INSERT INTO outbox_events (id, event_type, aggregate_id, aggregate_version, payload_json, status)
-         VALUES (gen_random_uuid(), 'order.paid', $1, 2, $2, 'PENDING')`,
-        [input.orderId, JSON.stringify({ orderId: input.orderId, paymentId: input.providerPaymentId })]
-      );
-
-      await client.query("COMMIT");
-    } catch (err) {
-      await client.query("ROLLBACK");
-      throw err;
-    } finally {
-      client.release();
-    }
+      const deadline = new Date(Date.now() + MERCHANT_ACCEPTANCE_WINDOW_SECONDS * 1000);
+      await client.query(`UPDATE orders SET merchant_response_deadline_at = $2 WHERE id = $1`, [
+        order.id,
+        deadline.toISOString(),
+      ]);
+      await OrderRepository.transitionLockedWithClient(client, order, {
+        toState: FulfillmentState.AWAITING_MERCHANT,
+        actorType: "SYSTEM",
+        actorId: "PAYMENT_GATEWAY",
+        reason: "Payment captured via Razorpay",
+        extra: { paymentId: input.providerPaymentId, amountPaise: input.amountPaise },
+      });
+      await CouponRepository.markRedeemedWithClient(client, input.orderId);
+      await JobRepository.enqueueWithClient(client, JobKind.MERCHANT_ACCEPTANCE_TIMEOUT, { orderId: input.orderId }, {
+        runAt: deadline,
+        dedupeKey: `merchant-timeout:${input.orderId}`,
+      });
+      return { outcome: "CAPTURED" as const };
+    });
   }
 
-  static async updateFulfillmentState(input: {
+  static async recordPaymentFailure(input: { razorpayOrderId: string; reason?: string }): Promise<void> {
+    await getDbPool().query(
+      `UPDATE payment_attempts SET failure_reason = LEFT($2, 500), updated_at = NOW()
+        WHERE razorpay_order_id = $1 AND status <> 'CAPTURED'`,
+      [input.razorpayOrderId, input.reason ?? "Payment failed"]
+    );
+  }
+
+  /**
+   * Cancels (or, once with the rider, fails) an order under the cancellation policy,
+   * in one transaction with: offer revocation, trip cancellation, coupon release and refund.
+   */
+  static async cancel(input: {
     orderId: string;
-    fromState: FulfillmentState;
-    toState: FulfillmentState;
-    actorType: "CUSTOMER" | "MERCHANT" | "RIDER" | "ADMIN" | "SYSTEM";
+    actor: CancellationActor;
     actorId?: string;
-    reason?: string;
-  }): Promise<void> {
-    OrderStateMachine.assertTransition(input.fromState, input.toState);
-
-    const pool = getDbPool();
-    const client = await pool.connect();
-
-    try {
-      await client.query("BEGIN");
-
-      // Verify current state under row lock
-      const res = await client.query(
-        `SELECT fulfillment_state FROM orders WHERE id = $1 FOR UPDATE`,
-        [input.orderId]
-      );
-      if (res.rows.length === 0) {
-        throw new Error(`Order ${input.orderId} not found`);
-      }
-      const currentState = res.rows[0].fulfillment_state;
-      if (currentState !== input.fromState) {
-        throw new Error(
-          `Conflict: cannot transition from ${currentState} to ${input.toState} (expected source: ${input.fromState})`
+    reason: string;
+    // Only honoured for DISCRETIONARY (admin) refunds; defaults to the full balance
+    refundAmountPaise?: number;
+    // When set, the order must currently be in one of these states (e.g. merchant reject)
+    expectedStates?: FulfillmentState[];
+  }): Promise<{ fulfillmentState: FulfillmentState; refundedPaise: number }> {
+    return withTransaction(async (client) => {
+      const order = await OrderRepository.lockForUpdate(client, input.orderId);
+      if (input.expectedStates && !input.expectedStates.includes(order.fulfillment_state)) {
+        throw new DomainError(
+          "STATE_CONFLICT",
+          `Order is ${order.fulfillment_state.toLowerCase().replace(/_/g, " ")} and can no longer be changed this way.`,
+          { details: { currentState: order.fulfillment_state } }
         );
       }
 
-      await client.query(
-        `UPDATE orders SET fulfillment_state = $1, updated_at = NOW() WHERE id = $2`,
-        [input.toState, input.orderId]
-      );
+      const decision = CancellationPolicy.evaluate(input.actor, order.fulfillment_state);
+      if (!decision.allowed) {
+        throw new DomainError("STATE_CONFLICT", decision.reason ?? "Order cannot be cancelled now.", {
+          details: { currentState: order.fulfillment_state },
+        });
+      }
+
+      await OrderRepository.transitionLockedWithClient(client, order, {
+        toState: decision.targetState,
+        actorType: input.actor,
+        actorId: input.actorId,
+        reason: input.reason,
+      });
 
       await client.query(
-        `INSERT INTO order_events (id, order_id, sequence, source_state, target_state, actor_type, actor_id, reason)
-         VALUES (gen_random_uuid(), $1, 3, $2, $3, $4, $5, $6)`,
-        [
-          input.orderId,
-          input.fromState,
-          input.toState,
-          input.actorType,
-          input.actorId ?? null,
-          input.reason ?? null,
-        ]
+        `UPDATE delivery_offers SET status = 'REVOKED', responded_at = NOW()
+          WHERE order_id = $1 AND status = 'OFFERED'`,
+        [order.id]
       );
-
       await client.query(
-        `INSERT INTO outbox_events (id, event_type, aggregate_id, aggregate_version, payload_json, status)
-         VALUES (gen_random_uuid(), $1, $2, 3, $3, 'PENDING')`,
-        [
-          `order.${input.toState.toLowerCase()}`,
-          input.orderId,
-          JSON.stringify({ orderId: input.orderId, state: input.toState }),
-        ]
+        `UPDATE delivery_assignments
+            SET status = $2, completed_at = NOW(), failure_reason = $3
+          WHERE order_id = $1 AND status IN ('ASSIGNED', 'AT_PICKUP', 'PICKED_UP', 'AT_DROPOFF')`,
+        [order.id, decision.targetState === FulfillmentState.DELIVERY_FAILED ? "FAILED" : "CANCELLED", input.reason]
       );
 
-      await client.query("COMMIT");
-    } catch (err) {
-      await client.query("ROLLBACK");
-      throw err;
-    } finally {
-      client.release();
-    }
+      let refundAmount: number | undefined;
+      if (decision.refundPolicy === "FULL") refundAmount = undefined; // full balance
+      else if (decision.refundPolicy === "DISCRETIONARY") refundAmount = input.refundAmountPaise;
+      const shouldRefund =
+        decision.refundPolicy === "FULL" ||
+        (decision.refundPolicy === "DISCRETIONARY" && input.refundAmountPaise !== 0);
+
+      let refundedPaise = 0;
+      if (shouldRefund) {
+        const refund = await RefundRepository.issueWithClient(client, {
+          orderId: order.id,
+          amountPaise: refundAmount,
+          reason: input.reason,
+          initiatedBy: input.actorId ? `${input.actor}:${input.actorId}` : input.actor,
+        });
+        refundedPaise = refund?.amountPaise ?? 0;
+      }
+
+      // The coupon goes back to the customer unless they were charged and kept part of the value
+      const paid = order.payment_status !== PaymentStatus.PENDING;
+      if (!paid || decision.refundPolicy === "FULL" || refundAmount === undefined) {
+        await CouponRepository.releaseWithClient(client, order.id);
+      }
+
+      return { fulfillmentState: decision.targetState, refundedPaise };
+    });
+  }
+
+  static async listEvents(orderId: string) {
+    const res = await getDbPool().query(
+      `SELECT sequence, source_state, target_state, actor_type, reason, created_at
+         FROM order_events WHERE order_id = $1 ORDER BY sequence`,
+      [orderId]
+    );
+    return res.rows.map((r) => ({
+      sequence: r.sequence as number,
+      sourceState: r.source_state as string,
+      targetState: r.target_state as string,
+      actorType: r.actor_type as string,
+      reason: (r.reason as string | null) ?? undefined,
+      createdAt: (r.created_at as Date).toISOString(),
+    }));
+  }
+
+  /** Operations board: newest orders first with optional state filter. */
+  static async listForAdmin(options: { states?: FulfillmentState[]; limit?: number; stuckOnly?: boolean } = {}) {
+    const res = await getDbPool().query(
+      `SELECT o.id, o.order_number, o.fulfillment_state, o.payment_status, o.payable_paise, o.refunded_paise,
+              o.created_at, o.updated_at, o.promised_delivery_at,
+              r.name AS restaurant_name,
+              COALESCE(o.delivery_address_snapshot->>'building', a.building) AS building,
+              COALESCE(o.delivery_address_snapshot->>'street', a.street) AS street,
+              rd.name AS rider_name
+         FROM orders o
+         JOIN restaurants r ON r.id = o.restaurant_id
+         JOIN customer_addresses a ON a.id = o.delivery_address_id
+         LEFT JOIN delivery_assignments da
+           ON da.order_id = o.id AND da.status IN ('ASSIGNED', 'AT_PICKUP', 'PICKED_UP', 'AT_DROPOFF')
+         LEFT JOIN riders rd ON rd.id = da.rider_id
+        WHERE ($1::text[] IS NULL OR o.fulfillment_state = ANY($1::text[]))
+          AND (
+            NOT $3::boolean
+            OR (o.fulfillment_state = 'READY_FOR_PICKUP' AND da.id IS NULL AND o.ready_at < NOW() - INTERVAL '5 minutes')
+            OR (o.fulfillment_state IN ('ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP', 'PICKED_UP', 'OUT_FOR_DELIVERY')
+                AND o.promised_delivery_at < NOW() - INTERVAL '10 minutes')
+          )
+        ORDER BY o.created_at DESC
+        LIMIT $2`,
+      [options.states && options.states.length > 0 ? options.states : null, options.limit ?? 50, options.stuckOnly ?? false]
+    );
+    return res.rows.map((r) => ({
+      orderId: r.id as string,
+      orderNumber: r.order_number as string,
+      restaurantName: r.restaurant_name as string,
+      customerAddress: `${r.building}, ${r.street}`,
+      riderName: (r.rider_name as string | null) ?? undefined,
+      fulfillmentState: r.fulfillment_state as FulfillmentState,
+      paymentStatus: r.payment_status as PaymentStatus,
+      payablePaise: r.payable_paise as number,
+      refundedPaise: r.refunded_paise as number,
+      createdAt: (r.created_at as Date).toISOString(),
+      updatedAt: (r.updated_at as Date).toISOString(),
+      promisedDeliveryAt: (r.promised_delivery_at as Date | null)?.toISOString(),
+    }));
   }
 }

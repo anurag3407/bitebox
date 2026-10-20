@@ -53,7 +53,7 @@ describe("Core Domain Units", () => {
     it("generates and validates order numbers and test clocks", () => {
       const clock = new TestClock(new Date("2026-10-19T10:00:00Z"));
       const orderNum = generateOrderNumber(clock.now());
-      expect(orderNum).toMatch(/^ORD-20261019-[A-Z0-9]{4}$/);
+      expect(orderNum).toMatch(/^ORD-20261019-[A-Z0-9]{6}$/);
 
       clock.advanceMinutes(30);
       expect(clock.now().toISOString()).toBe("2026-10-19T10:30:00.000Z");

@@ -4,17 +4,20 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
+  smallint,
   text,
   timestamp,
   uuid,
 } from "drizzle-orm/pg-core";
+import type { OpeningHours } from "@startup/contracts";
 
 // 1. Identity & Auth
 export const appUsers = pgTable("app_users", {
   id: uuid("id").primaryKey().defaultRandom(),
   clerkUserId: text("clerk_user_id").notNull().unique(),
   name: text("name").notNull(),
-  email: text("email").notNull().unique(),
+  email: text("email").unique(),
   phone: text("phone"),
   role: text("role").notNull().default("CUSTOMER"), // CUSTOMER, MERCHANT_STAFF, RIDER, ADMIN
   isActive: boolean("is_active").notNull().default(true),
@@ -68,7 +71,9 @@ export const customerAddresses = pgTable("customer_addresses", {
   longitude: doublePrecision("longitude").notNull(),
   isDefault: boolean("is_default").notNull().default(false),
   contactPhone: text("contact_phone"),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 // 4. Merchants & Outlets
@@ -104,7 +109,14 @@ export const restaurants = pgTable("restaurants", {
   pureVeg: boolean("pure_veg").notNull().default(false),
   heroImageUrl: text("hero_image_url"),
   offerTag: text("offer_tag"),
+  openingHours: jsonb("opening_hours").$type<OpeningHours | null>(),
+  maxDeliveryRadiusMeters: integer("max_delivery_radius_meters").notNull().default(7000),
+  packagingFeePaise: integer("packaging_fee_paise").notNull().default(2000),
+  avgPrepMinutes: integer("avg_prep_minutes").notNull().default(15),
+  commissionBp: integer("commission_bp").notNull().default(1500),
+  isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 // 5. Menu & Modifiers
@@ -128,7 +140,10 @@ export const menuItems = pgTable("menu_items", {
   stockPolicy: text("stock_policy").notNull().default("UNTRACKED"),
   isAvailable: boolean("is_available").notNull().default(true),
   imageUrl: text("image_url"),
+  isBestseller: boolean("is_bestseller").notNull().default(false),
+  displayOrder: integer("display_order").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const itemVariants = pgTable("item_variants", {
@@ -163,12 +178,30 @@ export const modifierOptions = pgTable("modifier_options", {
 export const coupons = pgTable("coupons", {
   id: uuid("id").primaryKey().defaultRandom(),
   code: text("code").notNull().unique(),
-  type: text("type").notNull().default("PERCENTAGE"), // PERCENTAGE, FLAT
+  type: text("type").notNull().default("PERCENTAGE"), // PERCENTAGE, FLAT, FREE_DELIVERY
   discountValue: integer("discount_value").notNull(), // percent or paise
   maxDiscountPaise: integer("max_discount_paise"),
   minOrderPaise: integer("min_order_paise").notNull().default(0),
   isActive: boolean("is_active").notNull().default(true),
+  description: text("description"),
+  validFrom: timestamp("valid_from", { withTimezone: true }),
+  validUntil: timestamp("valid_until", { withTimezone: true }),
+  usageLimitTotal: integer("usage_limit_total"),
+  usageLimitPerUser: integer("usage_limit_per_user"),
+  firstOrderOnly: boolean("first_order_only").notNull().default(false),
+  restaurantId: uuid("restaurant_id").references(() => restaurants.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const couponRedemptions = pgTable("coupon_redemptions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  couponId: uuid("coupon_id").notNull().references(() => coupons.id),
+  userId: uuid("user_id").notNull().references(() => appUsers.id),
+  orderId: uuid("order_id").notNull().unique(),
+  discountPaise: integer("discount_paise").notNull(),
+  status: text("status").notNull().default("RESERVED"), // RESERVED, REDEEMED, RELEASED
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 // 7. Quotes & Orders
@@ -181,6 +214,10 @@ export const quotes = pgTable("quotes", {
   breakdownJson: jsonb("breakdown_json").notNull(),
   estimatedMinMinutes: integer("estimated_min_minutes").notNull(),
   estimatedMaxMinutes: integer("estimated_max_minutes").notNull(),
+  couponCode: text("coupon_code"),
+  distanceMeters: integer("distance_meters"),
+  destinationLatitude: doublePrecision("destination_latitude"),
+  destinationLongitude: doublePrecision("destination_longitude"),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -201,8 +238,53 @@ export const orders = pgTable("orders", {
   instructions: text("instructions"),
   promisedDeliveryAt: timestamp("promised_delivery_at", { withTimezone: true }),
   merchantResponseDeadlineAt: timestamp("merchant_response_deadline_at", { withTimezone: true }),
+  quoteId: uuid("quote_id"),
+  version: integer("version").notNull().default(1),
+  deliveryAddressSnapshot: jsonb("delivery_address_snapshot"),
+  couponCode: text("coupon_code"),
+  prepTimeMinutes: integer("prep_time_minutes"),
+  cancellationReason: text("cancellation_reason"),
+  acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+  readyAt: timestamp("ready_at", { withTimezone: true }),
+  pickedUpAt: timestamp("picked_up_at", { withTimezone: true }),
+  deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+  cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+  refundedPaise: integer("refunded_paise").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const orderRatings = pgTable("order_ratings", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  orderId: uuid("order_id").notNull().unique().references(() => orders.id),
+  customerId: uuid("customer_id").notNull().references(() => appUsers.id),
+  restaurantId: uuid("restaurant_id").notNull().references(() => restaurants.id),
+  riderId: uuid("rider_id"),
+  foodRating: smallint("food_rating").notNull(),
+  deliveryRating: smallint("delivery_rating"),
+  comment: text("comment"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const userFavorites = pgTable(
+  "user_favorites",
+  {
+    userId: uuid("user_id").notNull().references(() => appUsers.id),
+    restaurantId: uuid("restaurant_id").notNull().references(() => restaurants.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.restaurantId] })]
+);
+
+export const pushSubscriptions = pgTable("push_subscriptions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => appUsers.id),
+  endpoint: text("endpoint").notNull().unique(),
+  p256dh: text("p256dh").notNull(),
+  auth: text("auth").notNull(),
+  userAgent: text("user_agent"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  lastSuccessAt: timestamp("last_success_at", { withTimezone: true }),
 });
 
 export const orderEvents = pgTable("order_events", {
@@ -223,6 +305,7 @@ export const paymentAttempts = pgTable("payment_attempts", {
   orderId: uuid("order_id").notNull().references(() => orders.id),
   razorpayOrderId: text("razorpay_order_id").notNull(),
   status: text("status").notNull().default("CREATED"), // CREATED, READY, CAPTURED, FAILED
+  failureReason: text("failure_reason"),
   amountPaise: integer("amount_paise").notNull(),
   currency: text("currency").notNull().default("INR"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -246,9 +329,13 @@ export const refunds = pgTable("refunds", {
   orderId: uuid("order_id").notNull().references(() => orders.id),
   paymentId: uuid("payment_id").references(() => payments.id),
   providerRefundId: text("provider_refund_id").unique(),
-  status: text("status").notNull().default("REQUESTED"), // REQUESTED, APPROVED, PROCESSED, FAILED
+  status: text("status").notNull().default("REQUESTED"), // REQUESTED, APPROVED, SUBMITTING, PENDING, PROCESSED, FAILED, UNKNOWN
   amountPaise: integer("amount_paise").notNull(),
   reason: text("reason").notNull(),
+  failureReason: text("failure_reason"),
+  initiatedBy: text("initiated_by"),
+  submittedAt: timestamp("submitted_at", { withTimezone: true }),
+  processedAt: timestamp("processed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -264,6 +351,7 @@ export const riders = pgTable("riders", {
   isOnline: boolean("is_online").notNull().default(false),
   currentLatitude: doublePrecision("current_latitude"),
   currentLongitude: doublePrecision("current_longitude"),
+  headingDegrees: doublePrecision("heading_degrees"),
   lastPingAt: timestamp("last_ping_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -274,6 +362,9 @@ export const deliveryOffers = pgTable("delivery_offers", {
   riderId: uuid("rider_id").notNull().references(() => riders.id),
   status: text("status").notNull().default("OFFERED"), // OFFERED, ACCEPTED, REJECTED, EXPIRED, REVOKED
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  respondedAt: timestamp("responded_at", { withTimezone: true }),
+  responseReason: text("response_reason"),
+  distanceToPickupMeters: integer("distance_to_pickup_meters"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -284,6 +375,11 @@ export const deliveryAssignments = pgTable("delivery_assignments", {
   status: text("status").notNull().default("ASSIGNED"), // ASSIGNED, AT_PICKUP, PICKED_UP, AT_DROPOFF, COMPLETED, CANCELLED
   assignedAt: timestamp("assigned_at", { withTimezone: true }).notNull().defaultNow(),
   completedAt: timestamp("completed_at", { withTimezone: true }),
+  otpFailedAttempts: integer("otp_failed_attempts").notNull().default(0),
+  arrivedPickupAt: timestamp("arrived_pickup_at", { withTimezone: true }),
+  pickedUpAt: timestamp("picked_up_at", { withTimezone: true }),
+  arrivedDropoffAt: timestamp("arrived_dropoff_at", { withTimezone: true }),
+  failureReason: text("failure_reason"),
 });
 
 // 10. Reliability, Idempotency & Outbox
@@ -304,6 +400,10 @@ export const webhookInbox = pgTable("webhook_inbox", {
   providerEventId: text("provider_event_id").notNull(),
   payloadJson: jsonb("payload_json").notNull(),
   status: text("status").notNull().default("PENDING"), // PENDING, PROCESSED, FAILED
+  eventType: text("event_type"),
+  attempts: integer("attempts").notNull().default(0),
+  lastError: text("last_error"),
+  processedAt: timestamp("processed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -313,7 +413,11 @@ export const outboxEvents = pgTable("outbox_events", {
   aggregateId: uuid("aggregate_id").notNull(),
   aggregateVersion: integer("aggregate_version").notNull().default(1),
   payloadJson: jsonb("payload_json").notNull(),
-  status: text("status").notNull().default("PENDING"), // PENDING, PUBLISHED, FAILED
+  status: text("status").notNull().default("PENDING"), // PENDING, PROCESSED, FAILED
+  attempts: integer("attempts").notNull().default(0),
+  availableAt: timestamp("available_at", { withTimezone: true }).notNull().defaultNow(),
+  processedAt: timestamp("processed_at", { withTimezone: true }),
+  lastError: text("last_error"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -327,6 +431,8 @@ export const jobs = pgTable("jobs", {
   maxAttempts: integer("max_attempts").notNull().default(5),
   leaseOwner: text("lease_owner"),
   leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+  dedupeKey: text("dedupe_key"),
+  lastError: text("last_error"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

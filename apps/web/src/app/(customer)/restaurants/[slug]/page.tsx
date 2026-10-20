@@ -1,99 +1,41 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import {
-  Star,
-  Clock,
-  MapPin,
-  Sparkles,
-  Plus,
-  Minus,
-  Check,
-  Search,
-  AlertCircle,
-} from "lucide-react";
+import Link from "next/link";
+import { useQuery } from "@tanstack/react-query";
+import { Star, Clock, MapPin, Sparkles, Search, AlertCircle, Share2, Award } from "lucide-react";
 import { MenuItemDto, RestaurantDetailDto } from "@startup/contracts";
-import { ApiClient } from "@startup/api-client";
-import { useCartStore } from "@/features/cart/cart-store";
+import { AddItemInput, useCartStore } from "@/features/cart/cart-store";
+import { useLocationStore } from "@/features/location/location-store";
 import { ItemCustomizerModal } from "@/components/menu/ItemCustomizerModal";
+import { Modal } from "@/components/ui/modal";
+import { SafeImage, VegMark } from "@/components/ui/misc";
+import { useToast } from "@/components/ui/toast";
+import { ApiError, useApi } from "@/lib/api";
+import { formatRupees, timeAgo } from "@/lib/format";
 
-export default function RestaurantMenuPage() {
-  const params = useParams();
-  const slug = params.slug as string;
-  const router = useRouter();
-
-  const [restaurant, setRestaurant] = useState<RestaurantDetailDto | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
-  const [menuSearch, setMenuSearch] = useState("");
-  const [vegOnly, setVegOnly] = useState(false);
-
-  // Customization modal state
-  const [customizingItem, setCustomizingItem] = useState<MenuItemDto | null>(null);
-
+function QuantityControl({
+  item,
+  restaurant,
+  onCustomize,
+  onConflict,
+}: {
+  item: MenuItemDto;
+  restaurant: RestaurantDetailDto;
+  onCustomize: () => void;
+  onConflict: (pending: AddItemInput, otherRestaurant: string) => void;
+}) {
+  const toast = useToast();
   const cart = useCartStore();
+  const isCustomisable = item.variants.length > 0 || item.modifierGroups.length > 0;
+  const quantity = cart.getQuantityOf(item.id);
+  const simpleLine = cart.items.find((l) => l.menuItemId === item.id && !l.variantId && l.selectedOptionIds.length === 0);
+  const disabled = !item.isAvailable || !restaurant.isAcceptingOrders;
 
-  useEffect(() => {
-    async function loadData() {
-      setLoading(true);
-      try {
-        const client = new ApiClient({ baseUrl: "" });
-        const data = await client.getRestaurantBySlug(slug);
-        setRestaurant(data);
-        if (data.categories[0]) {
-          setActiveCategoryId(data.categories[0].id);
-        }
-      } catch (err) {
-        console.error("Failed to load restaurant menu:", err);
-      } finally {
-        setLoading(false);
-      }
-    }
-    loadData();
-  }, [slug]);
-
-  if (loading) {
-    return (
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 animate-pulse">
-        <div className="h-48 bg-surface-muted rounded-3xl mb-6" />
-        <div className="h-10 bg-surface-muted rounded-xl w-64 mb-6" />
-        <div className="space-y-4">
-          {[1, 2, 3, 4].map((i) => (
-            <div key={i} className="h-28 bg-surface-muted rounded-2xl" />
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  if (!restaurant) {
-    return (
-      <div className="max-w-md mx-auto my-20 p-8 text-center bg-surface-muted rounded-3xl border border-border">
-        <AlertCircle className="w-12 h-12 text-brand mx-auto mb-3" />
-        <h2 className="text-xl font-bold text-text-primary">Restaurant not found</h2>
-        <p className="text-xs text-text-secondary mt-1 mb-6">
-          The requested restaurant is either inactive or does not exist.
-        </p>
-        <button
-          onClick={() => router.push("/")}
-          className="px-5 py-2.5 bg-brand text-white text-xs font-bold rounded-xl"
-        >
-          Back to Discovery
-        </button>
-      </div>
-    );
-  }
-
-  const handleAddItem = (item: MenuItemDto) => {
-    // If item has variants or modifier groups, open customizer modal
-    if (item.variants.length > 0 || item.modifierGroups.length > 0) {
-      setCustomizingItem(item);
-      return;
-    }
-
-    // Direct add for simple items
-    const res = cart.addItem({
+  const add = () => {
+    if (isCustomisable) return onCustomize();
+    const input: AddItemInput = {
       restaurantId: restaurant.id,
       restaurantName: restaurant.name,
       restaurantSlug: restaurant.slug,
@@ -102,300 +44,342 @@ export default function RestaurantMenuPage() {
       basePricePaise: item.pricePaise,
       quantity: 1,
       imageUrl: item.imageUrl,
-    });
+      isVeg: item.dietaryTag === "VEG" || item.dietaryTag === "VEGAN",
+    };
+    const res = cart.addItem(input);
+    if (res.conflictRestaurantName) onConflict(input, res.conflictRestaurantName);
+    else if (!res.success && res.reason) toast(res.reason, "error");
+  };
 
-    if (!res.success) {
-      if (
-        confirm(
-          `Your cart contains items from "${res.conflictRestaurantName}". Would you like to clear your cart and start a fresh order from "${restaurant.name}"?`
-        )
-      ) {
-        cart.clearCart();
-        cart.addItem({
-          restaurantId: restaurant.id,
-          restaurantName: restaurant.name,
-          restaurantSlug: restaurant.slug,
-          menuItemId: item.id,
-          name: item.name,
-          basePricePaise: item.pricePaise,
-          quantity: 1,
-          imageUrl: item.imageUrl,
-        });
+  if (disabled) {
+    return <span className="text-[11px] font-bold text-text-secondary bg-surface-muted px-3 py-2 rounded-lg">{item.isAvailable ? "Unavailable" : "Sold out"}</span>;
+  }
+
+  if (quantity > 0 && (simpleLine || isCustomisable)) {
+    return (
+      <div className="flex items-center bg-white border border-brand/40 rounded-lg shadow-sm text-brand font-black">
+        <button
+          aria-label={`Remove one ${item.name}`}
+          className="px-3 py-1.5"
+          onClick={() => {
+            // Customised dishes are edited from the cart, where each variant is its own line
+            if (simpleLine) cart.updateQuantity(simpleLine.lineId, simpleLine.quantity - 1);
+            else toast("Edit customised items from your cart");
+          }}
+        >
+          −
+        </button>
+        <span className="px-1 text-sm min-w-5 text-center">{quantity}</span>
+        <button aria-label={`Add one ${item.name}`} className="px-3 py-1.5" onClick={add}>
+          +
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <button onClick={add} className="px-6 py-1.5 bg-white border border-brand/40 text-brand font-black text-sm rounded-lg shadow-sm hover:bg-brand-light">
+      ADD
+    </button>
+  );
+}
+
+export default function RestaurantMenuPage() {
+  const { slug } = useParams<{ slug: string }>();
+  const router = useRouter();
+  const api = useApi();
+  const toast = useToast();
+  const cart = useCartStore();
+  const location = useLocationStore((s) => s.location);
+  const [menuSearch, setMenuSearch] = useState("");
+  const [vegOnly, setVegOnly] = useState(false);
+  const [bestsellersOnly, setBestsellersOnly] = useState(false);
+  const [customizingItem, setCustomizingItem] = useState<MenuItemDto | null>(null);
+  const [conflict, setConflict] = useState<{ pending: AddItemInput; other: string } | null>(null);
+
+  const restaurantQuery = useQuery({ queryKey: ["restaurant", slug], queryFn: () => api.getRestaurantBySlug(slug) });
+  const restaurant = restaurantQuery.data;
+  const reviews = useQuery({ queryKey: ["reviews", slug], queryFn: () => api.getRestaurantReviews(slug), enabled: !!restaurant });
+  const serviceability = useQuery({
+    queryKey: ["serviceability", restaurant?.id, location],
+    queryFn: () => api.checkServiceability(location!, restaurant!.id),
+    enabled: !!restaurant && !!location,
+  });
+
+  const categories = useMemo(() => {
+    if (!restaurant) return [];
+    const q = menuSearch.trim().toLowerCase();
+    return restaurant.categories
+      .map((cat) => ({
+        ...cat,
+        items: cat.items.filter(
+          (item) =>
+            (!vegOnly || item.dietaryTag === "VEG" || item.dietaryTag === "VEGAN") &&
+            (!bestsellersOnly || item.isBestseller) &&
+            (!q || item.name.toLowerCase().includes(q) || item.description?.toLowerCase().includes(q))
+        ),
+      }))
+      .filter((cat) => cat.items.length > 0);
+  }, [restaurant, menuSearch, vegOnly, bestsellersOnly]);
+
+  if (restaurantQuery.isPending) {
+    return (
+      <div className="max-w-5xl mx-auto px-4 py-8 animate-pulse space-y-4">
+        <div className="h-48 bg-surface-muted rounded-3xl" />
+        {[1, 2, 3].map((i) => (
+          <div key={i} className="h-28 bg-surface-muted rounded-2xl" />
+        ))}
+      </div>
+    );
+  }
+
+  if (!restaurant) {
+    const notFound = restaurantQuery.error instanceof ApiError && restaurantQuery.error.status === 404;
+    return (
+      <div className="max-w-md mx-auto my-20 p-8 text-center bg-surface-muted rounded-3xl border border-border">
+        <AlertCircle className="w-12 h-12 text-brand mx-auto mb-3" />
+        <h1 className="text-xl font-bold">{notFound ? "Restaurant not found" : "Couldn't load the menu"}</h1>
+        <button onClick={() => (notFound ? router.push("/") : restaurantQuery.refetch())} className="mt-6 px-5 py-2.5 bg-brand text-white text-xs font-bold rounded-xl">
+          {notFound ? "Back to restaurants" : "Retry"}
+        </button>
+      </div>
+    );
+  }
+
+  const deliversHere = serviceability.data?.isServiceable;
+  const share = async () => {
+    const url = window.location.href;
+    try {
+      if (navigator.share) await navigator.share({ title: restaurant.name, url });
+      else {
+        await navigator.clipboard.writeText(url);
+        toast("Link copied", "success");
       }
+    } catch {
+      // user cancelled the share sheet
     }
   };
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-24">
-      {/* 1. Restaurant Header Hero */}
-      <div className="bg-white rounded-3xl border border-border p-6 shadow-xs mb-8">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <h1 className="text-2xl sm:text-3xl font-black text-text-primary tracking-tight">
-                {restaurant.name}
-              </h1>
-              {restaurant.pureVeg && (
-                <span className="text-[10px] font-bold text-success bg-success-light px-2.5 py-0.5 rounded-full border border-success/30">
-                  PURE VEG
-                </span>
-              )}
-            </div>
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 pb-28">
+      <div className="relative rounded-3xl overflow-hidden mb-4 aspect-[3/1] bg-surface-muted">
+        <SafeImage src={restaurant.heroImageUrl} alt={restaurant.name} className="w-full h-full object-cover" />
+      </div>
 
-            <p className="text-sm text-text-secondary mb-2">{restaurant.cuisines.join(", ")}</p>
-            <p className="text-xs text-text-secondary flex items-center gap-1">
-              <MapPin className="w-3.5 h-3.5 text-text-secondary" />
-              <span>{restaurant.addressText}</span>
+      <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-4">
+        <div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <h1 className="text-2xl sm:text-3xl font-black text-text-primary tracking-tight">{restaurant.name}</h1>
+            {restaurant.pureVeg && <span className="text-[10px] font-bold text-success bg-success-light px-2.5 py-0.5 rounded-full border border-success/30">PURE VEG</span>}
+          </div>
+          <p className="text-sm text-text-secondary">{restaurant.cuisines.join(", ")}</p>
+          <p className="text-xs text-text-secondary flex items-center gap-1 mt-1">
+            <MapPin className="w-3.5 h-3.5" /> {restaurant.addressText}
+          </p>
+          {restaurant.offerTag && (
+            <div className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 bg-brand-light text-brand rounded-lg text-xs font-bold">
+              <Sparkles className="w-3.5 h-3.5" /> {restaurant.offerTag}
+            </div>
+          )}
+        </div>
+        <div className="flex items-center gap-4">
+          <div className="text-center">
+            <div className="inline-flex items-center gap-1 bg-success text-white px-2 py-0.5 rounded-md text-sm font-black">
+              {restaurant.rating.toFixed(1)} <Star className="w-3 h-3 fill-white" />
+            </div>
+            <p className="text-[10px] text-text-secondary mt-1">{restaurant.ratingCount.toLocaleString("en-IN")} ratings</p>
+          </div>
+          <div className="text-center">
+            <p className="flex items-center gap-1 text-sm font-bold">
+              <Clock className="w-4 h-4 text-brand" />
+              {serviceability.data?.estimatedDeliveryMinutes
+                ? `${serviceability.data.estimatedDeliveryMinutes} min`
+                : `${restaurant.deliveryTimeMinMinutes}-${restaurant.deliveryTimeMaxMinutes} min`}
             </p>
-
-            {/* Offer Callout */}
-            {restaurant.offerTag && (
-              <div className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 bg-brand-light text-brand rounded-lg text-xs font-bold border border-brand/20">
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>{restaurant.offerTag}</span>
-              </div>
-            )}
+            <p className="text-[10px] text-text-secondary">Delivery time</p>
           </div>
-
-          {/* Quick Metrics Badge */}
-          <div className="flex items-center gap-4 border-t md:border-t-0 md:border-l border-border pt-4 md:pt-0 md:pl-6">
-            <div className="flex flex-col items-center">
-              <div className="flex items-center gap-1 bg-success text-white px-2 py-0.5 rounded-md text-xs font-black shadow-xs">
-                <span>{restaurant.rating.toFixed(1)}</span>
-                <Star className="w-3 h-3 fill-white" />
-              </div>
-              <span className="text-[10px] text-text-secondary mt-1 font-medium">
-                {restaurant.ratingCount}+ ratings
-              </span>
-            </div>
-
-            <div className="h-8 w-px bg-border" />
-
-            <div>
-              <div className="flex items-center gap-1 text-sm font-bold text-text-primary">
-                <Clock className="w-4 h-4 text-brand" />
-                <span>
-                  {restaurant.deliveryTimeMinMinutes}-{restaurant.deliveryTimeMaxMinutes}m
-                </span>
-              </div>
-              <span className="text-[10px] text-text-secondary">Delivery Time</span>
-            </div>
-          </div>
+          <button onClick={share} aria-label="Share restaurant" className="p-2 rounded-full border border-border hover:bg-surface-muted">
+            <Share2 className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
-      {/* 2. Menu Search & Filters */}
-      <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-6">
-        <div className="w-full sm:max-w-xs relative">
-          <Search className="w-4 h-4 text-text-secondary absolute left-3 top-3 pointer-events-none" />
-          <input
-            type="text"
-            value={menuSearch}
-            onChange={(e) => setMenuSearch(e.target.value)}
-            placeholder="Search within menu..."
-            className="w-full pl-9 pr-3 py-2 bg-surface-muted border border-border rounded-xl text-xs text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-brand/20 focus:border-brand"
-          />
+      {!restaurant.isAcceptingOrders && (
+        <div className="mb-4 p-3 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-sm font-semibold">
+          {restaurant.isOpen ? "This restaurant is not accepting orders right now." : `This restaurant is closed. ${restaurant.nextOpenText ?? ""}`}
         </div>
+      )}
+      {location && serviceability.data && !deliversHere && (
+        <div className="mb-4 p-3 rounded-2xl bg-red-50 border border-red-200 text-red-800 text-sm font-semibold">
+          {serviceability.data.reason ?? "This restaurant does not deliver to your selected location."}
+        </div>
+      )}
 
-        <button
-          onClick={() => setVegOnly(!vegOnly)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-semibold transition-all ${
-            vegOnly
-              ? "bg-success-light text-success border-success"
-              : "bg-white text-text-primary border-border hover:bg-surface-muted"
-          }`}
-        >
-          <span className="w-2.5 h-2.5 rounded-sm border border-success flex items-center justify-center p-0.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-success" />
-          </span>
-          <span>Veg Only</span>
-        </button>
+      <div className="sticky top-16 z-20 bg-white py-3 -mx-4 px-4 sm:mx-0 sm:px-0 border-b border-border space-y-3">
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <Search className="w-4 h-4 text-text-secondary absolute left-3 top-2.5" />
+            <input
+              type="search"
+              value={menuSearch}
+              onChange={(e) => setMenuSearch(e.target.value)}
+              placeholder="Search in menu"
+              aria-label="Search in menu"
+              className="w-full pl-9 pr-3 py-2 bg-surface-muted border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand/20"
+            />
+          </div>
+          <button
+            onClick={() => setVegOnly(!vegOnly)}
+            aria-pressed={vegOnly}
+            className={`px-3 py-2 rounded-xl border text-xs font-semibold flex items-center gap-1.5 ${vegOnly ? "bg-success-light text-success border-success" : "border-border"}`}
+          >
+            <VegMark tag="VEG" /> Veg
+          </button>
+          <button
+            onClick={() => setBestsellersOnly(!bestsellersOnly)}
+            aria-pressed={bestsellersOnly}
+            className={`px-3 py-2 rounded-xl border text-xs font-semibold flex items-center gap-1 ${bestsellersOnly ? "bg-brand-light text-brand border-brand" : "border-border"}`}
+          >
+            <Award className="w-3.5 h-3.5" /> Bestseller
+          </button>
+        </div>
+        <nav className="flex gap-2 overflow-x-auto" aria-label="Menu categories">
+          {categories.map((cat) => (
+            <a
+              key={cat.id}
+              href={`#cat-${cat.id}`}
+              onClick={(e) => {
+                e.preventDefault();
+                document.getElementById(`cat-${cat.id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+              }}
+              className="shrink-0 px-3 py-1.5 rounded-full bg-surface-muted text-xs font-semibold hover:bg-brand-light hover:text-brand"
+            >
+              {cat.name} ({cat.items.length})
+            </a>
+          ))}
+        </nav>
       </div>
 
-      {/* 3. Category Nav Rails & Dish Sections */}
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
-        {/* Sticky Desktop Category Rail */}
-        <aside className="hidden lg:block col-span-1">
-          <div className="sticky top-24 space-y-1 p-3 bg-surface-muted rounded-2xl border border-border">
-            <h3 className="text-xs font-bold text-text-secondary uppercase tracking-wider px-2 py-1">
-              Menu Categories
-            </h3>
-            {restaurant.categories.map((cat) => (
-              <a
-                key={cat.id}
-                href={`#cat-${cat.id}`}
-                onClick={(e) => {
-                  e.preventDefault();
-                  document.getElementById(`cat-${cat.id}`)?.scrollIntoView({ behavior: "smooth" });
-                  setActiveCategoryId(cat.id);
-                }}
-                className={`block px-3 py-2 rounded-xl text-xs font-semibold transition-colors ${
-                  activeCategoryId === cat.id
-                    ? "bg-brand text-white shadow-xs font-bold"
-                    : "text-text-primary hover:bg-white"
-                }`}
-              >
-                {cat.name} ({cat.items.length})
-              </a>
-            ))}
-          </div>
-        </aside>
+      <div className="space-y-10 mt-6">
+        {categories.length === 0 && <p className="text-center text-sm text-text-secondary py-10">No dishes match your filters.</p>}
+        {categories.map((cat) => (
+          <section key={cat.id} id={`cat-${cat.id}`} className="scroll-mt-40">
+            <h2 className="text-lg font-black text-text-primary mb-2">{cat.name}</h2>
+            <ul className="divide-y divide-border">
+              {cat.items.map((item) => (
+                <li key={item.id} className={`py-5 flex gap-4 ${!item.isAvailable ? "opacity-60" : ""}`}>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <VegMark tag={item.dietaryTag} />
+                      {item.isBestseller && <span className="text-[10px] font-black text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded">BESTSELLER</span>}
+                    </div>
+                    <h3 className="font-bold text-text-primary mt-1">{item.name}</h3>
+                    <p className="text-sm font-semibold text-text-primary">
+                      {item.variants.length > 0 ? `from ${formatRupees(Math.min(...item.variants.map((v) => v.pricePaise)))}` : formatRupees(item.pricePaise)}
+                    </p>
+                    {item.description && <p className="text-xs text-text-secondary mt-1 line-clamp-2">{item.description}</p>}
+                  </div>
+                  <div className="relative w-32 shrink-0 flex flex-col items-center">
+                    <SafeImage src={item.imageUrl} alt={item.name} className="w-32 h-28 rounded-xl object-cover" />
+                    <div className="-mt-5">
+                      <QuantityControl
+                        item={item}
+                        restaurant={restaurant}
+                        onCustomize={() => setCustomizingItem(item)}
+                        onConflict={(pending, other) => setConflict({ pending, other })}
+                      />
+                    </div>
+                    {(item.variants.length > 0 || item.modifierGroups.length > 0) && item.isAvailable && (
+                      <span className="text-[10px] text-text-secondary mt-1">customisable</span>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))}
+      </div>
 
-        {/* Dish Catalog */}
-        <div className="lg:col-span-3 space-y-10">
-          {restaurant.categories.map((cat) => {
-            const visibleItems = cat.items.filter((item) => {
-              if (vegOnly && item.dietaryTag !== "VEG") return false;
-              if (
-                menuSearch &&
-                !item.name.toLowerCase().includes(menuSearch.toLowerCase()) &&
-                !item.description?.toLowerCase().includes(menuSearch.toLowerCase())
-              ) {
-                return false;
-              }
-              return true;
-            });
-
-            if (visibleItems.length === 0) return null;
-
-            return (
-              <section key={cat.id} id={`cat-${cat.id}`} className="scroll-mt-28">
-                <h3 className="text-xl font-bold text-text-primary tracking-tight mb-4 pb-2 border-b border-border flex items-center justify-between">
-                  <span>{cat.name}</span>
-                  <span className="text-xs font-normal text-text-secondary">
-                    {visibleItems.length} items
+      {(reviews.data?.length ?? 0) > 0 && (
+        <section className="mt-12">
+          <h2 className="text-lg font-black mb-3">What people are saying</h2>
+          <ul className="space-y-3">
+            {reviews.data!.map((r) => (
+              <li key={r.id} className="p-4 rounded-2xl border border-border">
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="inline-flex items-center gap-0.5 bg-success text-white px-1.5 rounded text-xs font-black">
+                    {r.foodRating} <Star className="w-3 h-3 fill-white" />
                   </span>
-                </h3>
-
-                <div className="divide-y divide-border">
-                  {visibleItems.map((item) => {
-                    const priceRupees = (item.pricePaise / 100).toFixed(0);
-                    const isVeg = item.dietaryTag === "VEG";
-                    const isCustomizable =
-                      item.variants.length > 0 || item.modifierGroups.length > 0;
-
-                    return (
-                      <div
-                        key={item.id}
-                        className="py-5 flex items-start justify-between gap-4 group"
-                      >
-                        <div className="flex-1 pr-4">
-                          {/* Dietary Badge */}
-                          <div
-                            className={`w-3.5 h-3.5 rounded-xs border p-0.5 flex items-center justify-center mb-1.5 ${
-                              isVeg ? "border-success" : "border-red-600"
-                            }`}
-                          >
-                            <div
-                              className={`w-1.5 h-1.5 rounded-full ${
-                                isVeg ? "bg-success" : "bg-red-600"
-                              }`}
-                            />
-                          </div>
-
-                          <h4 className="font-bold text-sm text-text-primary group-hover:text-brand transition-colors">
-                            {item.name}
-                          </h4>
-
-                          <p className="text-xs font-bold text-text-primary mt-0.5">
-                            ₹{priceRupees}
-                          </p>
-
-                          {item.description && (
-                            <p className="text-xs text-text-secondary line-clamp-2 mt-1 max-w-lg leading-relaxed">
-                              {item.description}
-                            </p>
-                          )}
-                        </div>
-
-                        {/* Image & Add Button */}
-                        <div className="relative flex flex-col items-center shrink-0">
-                          {item.imageUrl ? (
-                            <div className="w-28 h-24 sm:w-32 sm:h-28 rounded-2xl overflow-hidden bg-surface-muted border border-border shadow-xs">
-                              <img
-                                src={item.imageUrl}
-                                alt={item.name}
-                                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
-                              />
-                            </div>
-                          ) : (
-                            <div className="w-28 h-16 rounded-2xl bg-surface-muted border border-border flex items-center justify-center text-[10px] text-text-secondary">
-                              Fresh Food
-                            </div>
-                          )}
-
-                          <button
-                            onClick={() => handleAddItem(item)}
-                            className="absolute -bottom-3 px-6 py-1.5 bg-white hover:bg-brand-light text-brand border border-brand/30 rounded-xl text-xs font-black shadow-md hover:shadow-lg transition-all flex items-center gap-1 active:scale-95"
-                          >
-                            <span>ADD</span>
-                            <Plus className="w-3.5 h-3.5 text-brand" />
-                          </button>
-
-                          {isCustomizable && (
-                            <span className="text-[9px] text-text-secondary font-medium mt-4">
-                              Customisable
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
+                  <span className="font-semibold">{r.customerName}</span>
+                  <span className="text-xs text-text-secondary">· {timeAgo(r.createdAt)}</span>
                 </div>
-              </section>
-            );
-          })}
-        </div>
-      </div>
+                {r.comment && <p className="text-sm text-text-secondary mt-1.5">{r.comment}</p>}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
-      {/* Item Customizer Modal */}
       {customizingItem && (
         <ItemCustomizerModal
           item={customizingItem}
-          isOpen={true}
+          isOpen
           onClose={() => setCustomizingItem(null)}
-          onConfirm={(customization) => {
-            const res = cart.addItem({
+          onConfirm={(c) => {
+            const input: AddItemInput = {
               restaurantId: restaurant.id,
               restaurantName: restaurant.name,
               restaurantSlug: restaurant.slug,
               menuItemId: customizingItem.id,
               name: customizingItem.name,
-              variantId: customization.variantId,
-              variantName: customization.variantName,
-              selectedOptions: customization.selectedOptions,
-              basePricePaise: customization.basePricePaise,
-              quantity: customization.quantity,
-              instructions: customization.instructions,
+              variantId: c.variantId,
+              variantName: c.variantName,
+              selectedOptions: c.selectedOptions,
+              basePricePaise: c.basePricePaise,
+              quantity: c.quantity,
+              instructions: c.instructions,
               imageUrl: customizingItem.imageUrl,
-            });
-
-            if (!res.success) {
-              if (
-                confirm(
-                  `Your cart contains items from "${res.conflictRestaurantName}". Clear cart and start new order?`
-                )
-              ) {
-                cart.clearCart();
-                cart.addItem({
-                  restaurantId: restaurant.id,
-                  restaurantName: restaurant.name,
-                  restaurantSlug: restaurant.slug,
-                  menuItemId: customizingItem.id,
-                  name: customizingItem.name,
-                  variantId: customization.variantId,
-                  variantName: customization.variantName,
-                  selectedOptions: customization.selectedOptions,
-                  basePricePaise: customization.basePricePaise,
-                  quantity: customization.quantity,
-                  instructions: customization.instructions,
-                  imageUrl: customizingItem.imageUrl,
-                });
-              }
-            }
+              isVeg: customizingItem.dietaryTag === "VEG" || customizingItem.dietaryTag === "VEGAN",
+            };
+            const res = cart.addItem(input);
+            if (res.conflictRestaurantName) setConflict({ pending: input, other: res.conflictRestaurantName });
+            else if (!res.success && res.reason) toast(res.reason, "error");
           }}
         />
       )}
+
+      <Modal
+        open={!!conflict}
+        onClose={() => setConflict(null)}
+        size="sm"
+        title="Start a new cart?"
+        footer={
+          <div className="flex gap-3">
+            <button onClick={() => setConflict(null)} className="flex-1 py-2.5 rounded-xl border border-border text-sm font-bold">
+              Keep current
+            </button>
+            <button
+              onClick={() => {
+                if (conflict) cart.replaceWith([conflict.pending]);
+                setConflict(null);
+              }}
+              className="flex-1 py-2.5 rounded-xl bg-brand text-white text-sm font-bold"
+            >
+              Start new cart
+            </button>
+          </div>
+        }
+      >
+        <p className="text-sm text-text-secondary">
+          Your cart has items from <b>{conflict?.other}</b>. Starting a new cart will remove them so you can order from <b>{restaurant.name}</b>.
+        </p>
+      </Modal>
+
+      <p className="text-center mt-10 text-xs text-text-secondary">
+        <Link href="/" className="underline">
+          Browse more restaurants
+        </Link>
+      </p>
     </div>
   );
 }

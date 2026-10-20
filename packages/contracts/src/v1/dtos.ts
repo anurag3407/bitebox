@@ -70,6 +70,7 @@ export const MenuItemDtoSchema = z.object({
   stockPolicy: z.nativeEnum(StockPolicy).default(StockPolicy.UNTRACKED),
   isAvailable: z.boolean(),
   imageUrl: z.string().url().optional().or(z.string()),
+  isBestseller: z.boolean().optional(),
   variants: z.array(ItemVariantDtoSchema).default([]),
   modifierGroups: z.array(ModifierGroupDtoSchema).default([]),
 });
@@ -99,12 +100,48 @@ export const RestaurantSummaryDtoSchema = z.object({
   heroImageUrl: z.string().optional(),
   pureVeg: z.boolean(),
   offerTag: z.string().optional(),
+  // Present when the request carried a location
+  isServiceable: z.boolean().optional(),
+  // Human readable reopening hint when closed, e.g. "Opens at 11:00 AM"
+  nextOpenText: z.string().optional(),
+  isFavorite: z.boolean().optional(),
 });
 export type RestaurantSummaryDto = z.infer<typeof RestaurantSummaryDtoSchema>;
+
+export const RestaurantListRequestSchema = z.object({
+  latitude: z.coerce.number().min(-90).max(90).optional(),
+  longitude: z.coerce.number().min(-180).max(180).optional(),
+  pureVeg: z.coerce.boolean().optional(),
+  cuisine: z.string().max(40).optional(),
+  minRating: z.coerce.number().min(0).max(5).optional(),
+  maxDeliveryMinutes: z.coerce.number().int().min(10).max(120).optional(),
+  hasOffer: z.coerce.boolean().optional(),
+  sortBy: z
+    .enum(["relevance", "distance", "rating", "delivery_time", "cost_low_to_high", "cost_high_to_low"])
+    .optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+  offset: z.coerce.number().int().min(0).max(1000).default(0),
+});
+export type RestaurantListRequest = z.infer<typeof RestaurantListRequestSchema>;
+
+export const RestaurantListResponseSchema = z.object({
+  restaurants: z.array(RestaurantSummaryDtoSchema),
+  nextOffset: z.number().int().nullable(),
+});
+export type RestaurantListResponse = z.infer<typeof RestaurantListResponseSchema>;
+
+export const OpeningHoursSchema = z.record(
+  z.enum(["mon", "tue", "wed", "thu", "fri", "sat", "sun"]),
+  z.array(z.tuple([z.string().regex(/^\d{2}:\d{2}$/), z.string().regex(/^\d{2}:\d{2}$/)]))
+);
+export type OpeningHours = z.infer<typeof OpeningHoursSchema>;
 
 export const RestaurantDetailDtoSchema = RestaurantSummaryDtoSchema.extend({
   addressText: z.string(),
   phone: z.string().optional(),
+  latitude: z.number().optional(),
+  longitude: z.number().optional(),
+  openingHours: OpeningHoursSchema.optional(),
   categories: z.array(MenuCategoryDtoSchema),
 });
 export type RestaurantDetailDto = z.infer<typeof RestaurantDetailDtoSchema>;
@@ -154,17 +191,23 @@ export const AddressDtoSchema = z.object({
 });
 export type AddressDto = z.infer<typeof AddressDtoSchema>;
 
+const IndianPhoneSchema = z
+  .string()
+  .trim()
+  .regex(/^(\+91)?[6-9]\d{9}$/, "Enter a valid 10-digit Indian mobile number");
+
 export const CreateAddressRequestSchema = z.object({
-  label: z.string().min(1),
-  building: z.string().min(1),
-  street: z.string().min(1),
-  landmark: z.string().optional(),
+  label: z.string().trim().min(1).max(30),
+  building: z.string().trim().min(1).max(120),
+  street: z.string().trim().min(1).max(200),
+  landmark: z.string().trim().max(120).optional(),
   latitude: z.number().min(-90).max(90),
   longitude: z.number().min(-180).max(180),
   isDefault: z.boolean().default(false),
-  contactPhone: z.string().optional(),
+  contactPhone: IndianPhoneSchema.optional(),
 });
 export type CreateAddressRequest = z.infer<typeof CreateAddressRequestSchema>;
+export type CreateAddressRequestInput = z.input<typeof CreateAddressRequestSchema>;
 
 // Cart & Quotes
 export const CartItemInputSchema = z.object({
@@ -172,18 +215,27 @@ export const CartItemInputSchema = z.object({
   variantId: z.string().uuid().optional(),
   selectedOptionIds: z.array(z.string().uuid()).default([]),
   quantity: z.number().int().min(1).max(20),
-  instructions: z.string().max(200).optional(),
+  instructions: z.string().trim().max(200).optional(),
 });
 export type CartItemInput = z.infer<typeof CartItemInputSchema>;
 
-export const CreateQuoteRequestSchema = z.object({
-  restaurantId: z.string().uuid(),
-  deliveryAddressId: z.string().uuid().optional(),
-  destinationLocation: CoordinateSchema.optional(),
-  items: z.array(CartItemInputSchema).min(1),
-  couponCode: z.string().max(30).optional(),
-});
+export const MAX_TIP_PAISE = 50_000;
+
+export const CreateQuoteRequestSchema = z
+  .object({
+    restaurantId: z.string().uuid(),
+    deliveryAddressId: z.string().uuid().optional(),
+    destinationLocation: CoordinateSchema.optional(),
+    items: z.array(CartItemInputSchema).min(1).max(50),
+    couponCode: z.string().trim().max(30).optional(),
+    tipPaise: z.number().int().min(0).max(MAX_TIP_PAISE).default(0),
+  })
+  .refine((v) => v.deliveryAddressId || v.destinationLocation, {
+    message: "A delivery address or location is required to price the order",
+    path: ["deliveryAddressId"],
+  });
 export type CreateQuoteRequest = z.infer<typeof CreateQuoteRequestSchema>;
+export type CreateQuoteRequestInput = z.input<typeof CreateQuoteRequestSchema>;
 
 export const QuoteLineBreakdownSchema = z.object({
   menuItemId: z.string().uuid(),
@@ -206,6 +258,8 @@ export const QuoteBreakdownSchema = z.object({
   surgePaise: z.number().int().nonnegative(),
   taxPaise: z.number().int().nonnegative(),
   discountPaise: z.number().int().nonnegative(),
+  // Absent on orders created before tipping existed
+  tipPaise: z.number().int().nonnegative().optional(),
   payablePaise: z.number().int().nonnegative(),
 });
 export type QuoteBreakdown = z.infer<typeof QuoteBreakdownSchema>;
@@ -218,6 +272,9 @@ export const QuoteResponseSchema = z.object({
   estimatedMinMinutes: z.number().int().positive(),
   estimatedMaxMinutes: z.number().int().positive(),
   expiresAt: z.string(),
+  appliedCouponCode: z.string().optional(),
+  // Set when a coupon was supplied but could not be applied; the quote is still valid without it
+  couponError: z.string().optional(),
 });
 export type QuoteResponse = z.infer<typeof QuoteResponseSchema>;
 
@@ -225,9 +282,23 @@ export type QuoteResponse = z.infer<typeof QuoteResponseSchema>;
 export const CreateCheckoutRequestSchema = z.object({
   quoteId: z.string().uuid(),
   deliveryAddressId: z.string().uuid(),
-  instructions: z.string().max(300).optional(),
+  instructions: z.string().trim().max(300).optional(),
   idempotencyKey: z.string().min(10).max(100),
 });
+
+export const CheckoutResponseSchema = z.object({
+  orderId: z.string().uuid(),
+  orderNumber: z.string(),
+  paymentAttemptId: z.string().uuid(),
+  razorpayOrderId: z.string(),
+  razorpayKeyId: z.string(),
+  amountPaise: z.number().int().positive(),
+  currency: z.literal("INR"),
+  isDuplicate: z.boolean(),
+  // True when the server runs without real Razorpay credentials (local/dev only)
+  simulatedPayment: z.boolean(),
+});
+export type CheckoutResponse = z.infer<typeof CheckoutResponseSchema>;
 export type CreateCheckoutRequest = z.infer<typeof CreateCheckoutRequestSchema>;
 
 export const OrderSummaryDtoSchema = z.object({
@@ -235,11 +306,16 @@ export const OrderSummaryDtoSchema = z.object({
   orderNumber: z.string(),
   restaurantId: z.string().uuid(),
   restaurantName: z.string(),
+  restaurantSlug: z.string().optional(),
+  restaurantImageUrl: z.string().optional(),
   fulfillmentState: z.nativeEnum(FulfillmentState),
+  paymentStatus: z.nativeEnum(PaymentStatus).optional(),
   payablePaise: z.number().int().nonnegative(),
   createdAt: z.string(),
   promisedDeliveryAt: z.string().optional(),
   itemCount: z.number().int().positive(),
+  itemsPreview: z.string().optional(),
+  rating: z.number().int().min(1).max(5).optional(),
 });
 export type OrderSummaryDto = z.infer<typeof OrderSummaryDtoSchema>;
 
@@ -270,6 +346,34 @@ export const OrderDetailDtoSchema = z.object({
   promisedDeliveryAt: z.string().optional(),
   currentEtaMinutes: z.number().int().positive().optional(),
   deliveryOtp: z.string().optional(),
+  // Only exposed to the restaurant's own staff: the rider reads it back at handover
+  pickupCode: z.string().optional(),
+  instructions: z.string().optional(),
+  couponCode: z.string().optional(),
+  prepTimeMinutes: z.number().int().positive().optional(),
+  cancellationReason: z.string().optional(),
+  acceptedAt: z.string().optional(),
+  readyAt: z.string().optional(),
+  pickedUpAt: z.string().optional(),
+  deliveredAt: z.string().optional(),
+  cancelledAt: z.string().optional(),
+  refundedPaise: z.number().int().nonnegative().optional(),
+  rider: z
+    .object({
+      name: z.string(),
+      phone: z.string().optional(),
+      vehicleType: z.string().optional(),
+    })
+    .optional(),
+  rating: z
+    .object({
+      foodRating: z.number().int().min(1).max(5),
+      deliveryRating: z.number().int().min(1).max(5).optional(),
+      comment: z.string().optional(),
+    })
+    .optional(),
+  canCancel: z.boolean().optional(),
+  canRate: z.boolean().optional(),
 });
 export type OrderDetailDto = z.infer<typeof OrderDetailDtoSchema>;
 
@@ -368,7 +472,19 @@ export const RiderLocationPingSchema = z.object({
 export type RiderLocationPing = z.infer<typeof RiderLocationPingSchema>;
 
 export const RiderMilestoneRequestSchema = z.object({
-  challengeCode: z.string().regex(/^\d{4,6}$/).optional(),
+  assignmentId: z.string().uuid(),
+  nextStatus: z.enum(["AT_PICKUP", "PICKED_UP", "AT_DROPOFF", "COMPLETED", "FAILED"]),
+  challengeCode: z.string().trim().regex(/^\d{4,6}$/).optional(),
+  failureReason: z.string().trim().min(3).max(200).optional(),
+});
+export type RiderMilestoneRequestInput = z.infer<typeof RiderMilestoneRequestSchema>;
+
+export const RiderStatusRequestSchema = z.object({
+  isOnline: z.boolean(),
+});
+
+export const RiderRejectOfferRequestSchema = z.object({
+  reason: z.string().trim().max(200).optional(),
 });
 export type RiderMilestoneRequest = z.infer<typeof RiderMilestoneRequestSchema>;
 
@@ -381,12 +497,58 @@ export type ManualAssignRiderRequest = z.infer<typeof ManualAssignRiderRequestSc
 
 export const RefundRequestSchema = z.object({
   amountPaise: z.number().int().positive(),
-  reason: z.string().min(3),
+  reason: z.string().trim().min(3).max(300),
 });
+
+export const AdminCancelOrderRequestSchema = z.object({
+  reason: z.string().trim().min(3).max(300),
+  // Defaults to the full refundable balance when omitted; 0 means cancel without refund
+  refundAmountPaise: z.number().int().nonnegative().optional(),
+});
+
+export const CustomerCancelOrderRequestSchema = z.object({
+  reason: z.string().trim().max(300).optional(),
+});
+
+// Merchant console
+export const MerchantRestaurantStatusRequestSchema = z.object({
+  isAcceptingOrders: z.boolean(),
+});
+
+export const MerchantItemAvailabilityRequestSchema = z.object({
+  isAvailable: z.boolean(),
+});
+
+// Ratings & reviews
+export const CreateOrderRatingRequestSchema = z.object({
+  foodRating: z.number().int().min(1).max(5),
+  deliveryRating: z.number().int().min(1).max(5).optional(),
+  comment: z.string().trim().max(500).optional(),
+});
+export type CreateOrderRatingRequest = z.infer<typeof CreateOrderRatingRequestSchema>;
+
+export const RestaurantReviewDtoSchema = z.object({
+  id: z.string().uuid(),
+  customerName: z.string(),
+  foodRating: z.number().int().min(1).max(5),
+  comment: z.string().optional(),
+  createdAt: z.string(),
+});
+export type RestaurantReviewDto = z.infer<typeof RestaurantReviewDtoSchema>;
+
+// Web push (PWA)
+export const PushSubscriptionRequestSchema = z.object({
+  endpoint: z.string().url().max(1000),
+  keys: z.object({
+    p256dh: z.string().min(10).max(200),
+    auth: z.string().min(5).max(100),
+  }),
+});
+export type PushSubscriptionRequest = z.infer<typeof PushSubscriptionRequestSchema>;
 export type RefundRequest = z.infer<typeof RefundRequestSchema>;
 
 export const UpdateProfileRequestSchema = z.object({
-  name: z.string().min(1).optional(),
+  name: z.string().trim().min(1).max(80).optional(),
   phone: z.string().regex(/^\+[1-9]\d{7,14}$/, "Phone must be in E.164 format (e.g. +919876543210)").optional(),
 });
 export type UpdateProfileRequest = z.infer<typeof UpdateProfileRequestSchema>;

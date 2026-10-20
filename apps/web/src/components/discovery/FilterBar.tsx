@@ -1,95 +1,93 @@
 "use client";
 
 import React from "react";
-import { SlidersHorizontal, Star, Zap, Tag } from "lucide-react";
+import { Star, Zap, Tag, ArrowUpDown } from "lucide-react";
 
-interface FilterBarProps {
+export type SortOption = "relevance" | "distance" | "rating" | "delivery_time" | "cost_low_to_high" | "cost_high_to_low";
+
+export interface DiscoveryFilters {
   pureVeg: boolean;
-  onTogglePureVeg: () => void;
   minRating: number | null;
-  onToggleRating: () => void;
   fastDelivery: boolean;
-  onToggleFastDelivery: () => void;
   hasOffer: boolean;
-  onToggleOffer: () => void;
-  activeCount: number;
-  onClearAll: () => void;
+  sortBy: SortOption;
+}
+
+const SORT_LABELS: Record<SortOption, string> = {
+  relevance: "Relevance",
+  distance: "Distance",
+  rating: "Rating: high to low",
+  delivery_time: "Delivery time",
+  cost_low_to_high: "Cost: low to high",
+  cost_high_to_low: "Cost: high to low",
+};
+
+function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      aria-pressed={active}
+      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-semibold transition-all shrink-0 ${
+        active ? "bg-brand-light text-brand border-brand" : "bg-white text-text-primary border-border hover:bg-surface-muted"
+      }`}
+    >
+      {children}
+    </button>
+  );
 }
 
 export function FilterBar({
-  pureVeg,
-  onTogglePureVeg,
-  minRating,
-  onToggleRating,
-  fastDelivery,
-  onToggleFastDelivery,
-  hasOffer,
-  onToggleOffer,
-  activeCount,
-  onClearAll,
-}: FilterBarProps) {
+  filters,
+  onChange,
+  hasLocation,
+}: {
+  filters: DiscoveryFilters;
+  onChange: (next: DiscoveryFilters) => void;
+  hasLocation: boolean;
+}) {
+  const set = (patch: Partial<DiscoveryFilters>) => onChange({ ...filters, ...patch });
+  const active = Number(filters.pureVeg) + Number(!!filters.minRating) + Number(filters.fastDelivery) + Number(filters.hasOffer);
+
   return (
-    <div className="flex items-center gap-2 overflow-x-auto py-3 border-y border-border sticky top-16 bg-white z-30">
-      {/* 1. Pure Veg Toggle */}
-      <button
-        onClick={onTogglePureVeg}
-        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-semibold transition-all shrink-0 ${
-          pureVeg
-            ? "bg-success-light text-success border-success"
-            : "bg-white text-text-primary border-border hover:bg-surface-muted"
-        }`}
-      >
-        <span className="w-2.5 h-2.5 rounded-sm border border-success flex items-center justify-center p-0.5">
+    <div className="flex items-center gap-2 overflow-x-auto py-3 border-y border-border sticky top-16 bg-white z-30 -mx-4 px-4 sm:mx-0 sm:px-0">
+      <label className="flex items-center gap-1 px-3 py-1.5 rounded-full border border-border text-xs font-semibold shrink-0">
+        <ArrowUpDown className="w-3.5 h-3.5" />
+        <select
+          value={filters.sortBy}
+          onChange={(e) => set({ sortBy: e.target.value as SortOption })}
+          className="bg-transparent focus:outline-none"
+          aria-label="Sort restaurants"
+        >
+          {(Object.keys(SORT_LABELS) as SortOption[])
+            .filter((k) => hasLocation || k !== "distance")
+            .map((k) => (
+              <option key={k} value={k}>
+                {SORT_LABELS[k]}
+              </option>
+            ))}
+        </select>
+      </label>
+      <Chip active={filters.pureVeg} onClick={() => set({ pureVeg: !filters.pureVeg })}>
+        <span className="w-2.5 h-2.5 rounded-sm border border-success flex items-center justify-center">
           <span className="w-1.5 h-1.5 rounded-full bg-success" />
         </span>
-        <span>Pure Veg</span>
-      </button>
-
-      {/* 2. Rating 4.0+ */}
-      <button
-        onClick={onToggleRating}
-        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-semibold transition-all shrink-0 ${
-          minRating
-            ? "bg-brand-light text-brand border-brand"
-            : "bg-white text-text-primary border-border hover:bg-surface-muted"
-        }`}
-      >
-        <Star className={`w-3.5 h-3.5 ${minRating ? "fill-brand text-brand" : "text-text-secondary"}`} />
-        <span>Rating 4.0+</span>
-      </button>
-
-      {/* 3. Fast Delivery (<30 mins) */}
-      <button
-        onClick={onToggleFastDelivery}
-        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-semibold transition-all shrink-0 ${
-          fastDelivery
-            ? "bg-brand-light text-brand border-brand"
-            : "bg-white text-text-primary border-border hover:bg-surface-muted"
-        }`}
-      >
-        <Zap className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
-        <span>Under 30 mins</span>
-      </button>
-
-      {/* 4. Great Offers */}
-      <button
-        onClick={onToggleOffer}
-        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-semibold transition-all shrink-0 ${
-          hasOffer
-            ? "bg-brand-light text-brand border-brand"
-            : "bg-white text-text-primary border-border hover:bg-surface-muted"
-        }`}
-      >
-        <Tag className="w-3.5 h-3.5 text-brand" />
-        <span>Offers</span>
-      </button>
-
-      {activeCount > 0 && (
+        Pure Veg
+      </Chip>
+      <Chip active={!!filters.minRating} onClick={() => set({ minRating: filters.minRating ? null : 4 })}>
+        <Star className="w-3.5 h-3.5" /> Rating 4.0+
+      </Chip>
+      <Chip active={filters.fastDelivery} onClick={() => set({ fastDelivery: !filters.fastDelivery })}>
+        <Zap className="w-3.5 h-3.5 text-amber-500" /> Under 30 mins
+      </Chip>
+      <Chip active={filters.hasOffer} onClick={() => set({ hasOffer: !filters.hasOffer })}>
+        <Tag className="w-3.5 h-3.5" /> Offers
+      </Chip>
+      {active > 0 && (
         <button
-          onClick={onClearAll}
-          className="text-xs text-brand font-bold underline hover:text-brand-hover shrink-0 ml-2"
+          onClick={() => onChange({ pureVeg: false, minRating: null, fastDelivery: false, hasOffer: false, sortBy: filters.sortBy })}
+          className="text-xs text-brand font-bold underline shrink-0 ml-1"
         >
-          Clear filters ({activeCount})
+          Clear ({active})
         </button>
       )}
     </div>

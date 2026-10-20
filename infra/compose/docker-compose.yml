@@ -1,68 +1,99 @@
-version: "3.8"
+# Production stack for a single VPS: nginx (TLS) → web (Next.js) ; worker ; one-shot migrate.
+# PostgreSQL (Supabase) and Redis (Upstash) are managed services reached over TLS.
+# Usage: docker compose --env-file ../../.env -f docker-compose.yml up -d
+
+x-runtime-env: &runtime-env
+  NODE_ENV: production
+  APP_ENV: ${APP_ENV:-production}
+  APP_ORIGIN: ${APP_ORIGIN}
+  DATABASE_URL: ${DATABASE_URL}
+  DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-20}
+  UPSTASH_REDIS_REST_URL: ${UPSTASH_REDIS_REST_URL}
+  UPSTASH_REDIS_REST_TOKEN: ${UPSTASH_REDIS_REST_TOKEN}
+  CLERK_SECRET_KEY: ${CLERK_SECRET_KEY}
+  CLERK_ISSUER: ${CLERK_ISSUER}
+  CLERK_AUTHORIZED_PARTIES: ${CLERK_AUTHORIZED_PARTIES:-}
+  RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID}
+  RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET}
+  RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET}
+  MAPBOX_SERVER_TOKEN: ${MAPBOX_SERVER_TOKEN:-}
+  FAST2SMS_API_KEY: ${FAST2SMS_API_KEY:-}
+  FAST2SMS_SENDER_ID: ${FAST2SMS_SENDER_ID:-}
+  BREVO_API_KEY: ${BREVO_API_KEY:-}
+  BREVO_SENDER_EMAIL: ${BREVO_SENDER_EMAIL}
+  BREVO_SENDER_NAME: ${BREVO_SENDER_NAME:-ZomatoFresh}
+  VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+  VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+  VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:support@example.com}
+  OTP_ENCRYPTION_KEY: ${OTP_ENCRYPTION_KEY}
+  OPS_ALERT_EMAIL: ${OPS_ALERT_EMAIL:-}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
 
 services:
+  migrate:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.worker
+    image: startup-worker:${RELEASE:-latest}
+    working_dir: /app/packages/database
+    command: ["node", "--import", "tsx", "src/migrate.ts"]
+    environment:
+      <<: *runtime-env
+      # Supabase: use the direct (non-pooler) connection for DDL
+      MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:-}
+    restart: "no"
+    networks: [startup-net]
+
+  web:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.web
+      args:
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
+        NEXT_PUBLIC_RAZORPAY_KEY_ID: ${NEXT_PUBLIC_RAZORPAY_KEY_ID}
+        NEXT_PUBLIC_MAPBOX_TOKEN: ${NEXT_PUBLIC_MAPBOX_TOKEN:-}
+        NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+    image: startup-web:${RELEASE:-latest}
+    restart: unless-stopped
+    # Not published: only nginx may reach it, so X-Real-IP (used for rate limits) cannot be spoofed
+    expose: ["3000"]
+    environment:
+      <<: *runtime-env
+      SERVICE_NAME: web
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    stop_grace_period: 30s
+    networks: [startup-net]
+
+  worker:
+    image: startup-worker:${RELEASE:-latest}
+    restart: unless-stopped
+    environment:
+      <<: *runtime-env
+      SERVICE_NAME: worker
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    # Lets in-flight jobs finish; unfinished leases are retried by the next worker
+    stop_grace_period: 30s
+    networks: [startup-net]
+
   nginx:
-    image: nginx:alpine
-    container_name: startup-nginx
+    image: nginx:1.27-alpine
     restart: unless-stopped
     ports:
       - "80:80"
       - "443:443"
     volumes:
       - ../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - certs:/etc/ssl/certs:ro
+      - ${TLS_CERT_DIR:-/etc/letsencrypt}:/etc/letsencrypt:ro
+      - ${ACME_WEBROOT:-/var/www/certbot}:/var/www/certbot:ro
     depends_on:
-      - web
-    networks:
-      - startup-net
-
-  web:
-    build:
-      context: ../..
-      dockerfile: infra/docker/Dockerfile.web
-    container_name: startup-web
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    environment:
-      NODE_ENV: production
-      DATABASE_URL: ${DATABASE_URL}
-      UPSTASH_REDIS_REST_URL: ${UPSTASH_REDIS_REST_URL}
-      UPSTASH_REDIS_REST_TOKEN: ${UPSTASH_REDIS_REST_TOKEN}
-      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY}
-      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
-      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID}
-      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET}
-      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET}
-      MAPBOX_SECRET_TOKEN: ${MAPBOX_SECRET_TOKEN}
-      NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN: ${NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN}
-      FAST2SMS_API_KEY: ${FAST2SMS_API_KEY}
-      BREVO_API_KEY: ${BREVO_API_KEY}
-      APP_URL: ${APP_URL:-https://zomatofresh.local}
-    networks:
-      - startup-net
-
-  worker:
-    build:
-      context: ../..
-      dockerfile: infra/docker/Dockerfile.worker
-    container_name: startup-worker
-    restart: unless-stopped
-    environment:
-      NODE_ENV: production
-      DATABASE_URL: ${DATABASE_URL}
-      UPSTASH_REDIS_REST_URL: ${UPSTASH_REDIS_REST_URL}
-      UPSTASH_REDIS_REST_TOKEN: ${UPSTASH_REDIS_REST_TOKEN}
-      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID}
-      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET}
-      FAST2SMS_API_KEY: ${FAST2SMS_API_KEY}
-      BREVO_API_KEY: ${BREVO_API_KEY}
-    networks:
-      - startup-net
+      web:
+        condition: service_healthy
+    networks: [startup-net]
 
 networks:
   startup-net:
     driver: bridge
-
-volumes:
-  certs:

@@ -6,10 +6,15 @@ on:
   pull_request:
     branches: [main, master]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
-    name: Lint, Typecheck and Test
+    name: Typecheck, lint, test, build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     services:
       postgres:
@@ -26,35 +31,28 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+    env:
+      # The suite refuses databases whose name lacks "test"; global setup migrates + seeds it
+      TEST_DATABASE_URL: postgresql://postgres:password@localhost:5432/zomatofresh_test
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v3
+      - uses: pnpm/action-setup@v3
         with:
           version: 10.33.0
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
 
-      - name: Typecheck monorepo
-        run: pnpm typecheck
-
-      - name: Run database migrations
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm --filter @startup/web lint
+      - run: pnpm test
+      - name: Verify migrations are idempotent
         env:
-          DATABASE_URL: postgresql://postgres:password@localhost:5432/zomatofresh_test
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
         run: pnpm db:migrate
-
-      - name: Run test suites
-        env:
-          DATABASE_URL: postgresql://postgres:password@localhost:5432/zomatofresh_test
-        run: pnpm test
-
-      - name: Build Next.js Web and Worker
-        run: pnpm build
+      - run: pnpm build
