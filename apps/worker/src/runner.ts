@@ -75,6 +75,15 @@ export class WorkerRunner {
       dedupeKey: `settlement:${cutoff.toISOString()}`,
       maxAttempts: 5,
     });
+    // At 00:30 IST, generate today's meal-pass deliveries (T-12h before a 12:30 lunch).
+    const ist = new Date(Date.now() + 330 * 60_000);
+    if (ist.getUTCHours() >= 1) {
+      const today = new Date(Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate()));
+      await JobRepository.enqueue(JobKind.MEAL_PASS_DAILY_GENERATION, { date: today.toISOString() }, {
+        dedupeKey: `meal-pass:${today.toISOString().slice(0, 10)}`,
+        maxAttempts: 5,
+      });
+    }
   }
 
   private loop(name: string, intervalMs: number, fn: () => Promise<number | void>): void {

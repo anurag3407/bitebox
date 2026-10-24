@@ -14,6 +14,7 @@ pnpm test             # runs against startup_test (migrated + seeded automatical
 
 Production: fill real secrets in `.env` with `APP_ENV=production`, then `infra/scripts/deploy.sh`.
 Review findings, architecture and remaining gaps: [docs/implementation/production-readiness.md](docs/implementation/production-readiness.md).
+Business model, unit economics and revenue strategy: [docs/business/business-model-strategy.md](docs/business/business-model-strategy.md).
 
 ---
 

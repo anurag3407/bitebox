@@ -8,7 +8,7 @@ import { assertUuid, parseBody, route } from "@/server/route";
 export const POST = route<{ orderId: string }>(async (req, { params }, requestId) => {
   const auth = await requireAuth(req, [UserRole.ADMIN]);
   const orderId = assertUuid((await params).orderId, "order");
-  const { reason, refundAmountPaise } = await parseBody(req, AdminCancelOrderRequestSchema);
+  const { reason, refundAmountPaise, faultCode } = await parseBody(req, AdminCancelOrderRequestSchema);
 
   const result = await OrderRepository.cancel({
     orderId,
@@ -16,6 +16,7 @@ export const POST = route<{ orderId: string }>(async (req, { params }, requestId
     actorId: auth.user.id,
     reason,
     refundAmountPaise,
+    faultCode,
   });
   logger.info("admin cancelled order", { requestId, orderId, adminId: auth.user.id, ...result });
   return apiSuccess({ success: true, ...result }, 200, { requestId });

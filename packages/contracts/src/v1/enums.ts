@@ -85,6 +85,61 @@ export const UserRole = {
 } as const;
 export type UserRole = (typeof UserRole)[keyof typeof UserRole];
 
+export const AcquisitionChannel = {
+  MARKETPLACE: "MARKETPLACE",
+  MERCHANT_DIRECT_SESSION: "MERCHANT_DIRECT_SESSION",
+  MERCHANT_FIRST_ORIGIN: "MERCHANT_FIRST_ORIGIN",
+  MEAL_PASS: "MEAL_PASS",
+  CORPORATE_CLUB: "CORPORATE_CLUB",
+  SURPLUS_BAG: "SURPLUS_BAG",
+} as const;
+export type AcquisitionChannel = (typeof AcquisitionChannel)[keyof typeof AcquisitionChannel];
+
+export const FaultCode = {
+  MERCHANT_QUALITY: "MERCHANT_QUALITY",
+  MERCHANT_DELAY: "MERCHANT_DELAY",
+  RIDER_DELAY: "RIDER_DELAY",
+  PLATFORM_GOODWILL: "PLATFORM_GOODWILL",
+} as const;
+export type FaultCode = (typeof FaultCode)[keyof typeof FaultCode];
+
+export const MealPassStatus = {
+  ACTIVE: "ACTIVE",
+  PAUSED: "PAUSED",
+  EXPIRED: "EXPIRED",
+  EXHAUSTED: "EXHAUSTED",
+} as const;
+export type MealPassStatus = (typeof MealPassStatus)[keyof typeof MealPassStatus];
+
+export const ScheduledMealStatus = {
+  SCHEDULED: "SCHEDULED",
+  SKIPPED_EARLY: "SKIPPED_EARLY",
+  CONVERTED_TO_SURPLUS: "CONVERTED_TO_SURPLUS",
+  LOCKED_FOR_PREP: "LOCKED_FOR_PREP",
+  DELIVERED: "DELIVERED",
+  CANCELLED: "CANCELLED",
+} as const;
+export type ScheduledMealStatus = (typeof ScheduledMealStatus)[keyof typeof ScheduledMealStatus];
+
+export const BatchStatus = {
+  COLLECTING: "COLLECTING",
+  THRESHOLD_MET: "THRESHOLD_MET",
+  LOCKED: "LOCKED",
+  IN_TRANSIT: "IN_TRANSIT",
+  HANDED_TO_CAPTAIN: "HANDED_TO_CAPTAIN",
+  COMPLETED: "COMPLETED",
+} as const;
+export type BatchStatus = (typeof BatchStatus)[keyof typeof BatchStatus];
+
+export const SurplusListingStatus = {
+  ACTIVE: "ACTIVE",
+  SOLD_OUT: "SOLD_OUT",
+  EXPIRED: "EXPIRED",
+  CANCELLED: "CANCELLED",
+} as const;
+export type SurplusListingStatus = (typeof SurplusListingStatus)[keyof typeof SurplusListingStatus];
+
+
 export const MerchantStaffRole = {
   OWNER: "OWNER",
   MANAGER: "MANAGER",

@@ -1,5 +1,7 @@
 import type { PoolClient } from "pg";
 import {
+  AcquisitionChannel,
+  FaultCode,
   FulfillmentState,
   OrderDetailDto,
   OrderSummaryDto,
@@ -58,6 +60,15 @@ export interface CreateOrderParams {
   quoteId?: string;
   couponCode?: string;
   deliveryAddressSnapshot?: DeliveryAddressSnapshot;
+  acquisitionChannel?: AcquisitionChannel;
+  commissionBpApplied?: number;
+  commissionPaise?: number;
+  merchantOrderFeePaise?: number;
+  merchantNetPayoutPaise?: number;
+  orderType?: "PRIMARY" | "ADDON" | "MEAL_PASS" | "SURPLUS" | "CORPORATE";
+  parentOrderId?: string;
+  slotWindow?: string;
+  dropPointId?: string;
 }
 
 export interface CheckoutResult {
@@ -80,6 +91,10 @@ export interface LockedOrderRow {
   breakdown_json: QuoteBreakdown;
   version: number;
   prep_time_minutes: number | null;
+  acquisition_channel: AcquisitionChannel;
+  commission_bp_applied: number | null;
+  merchant_order_fee_paise: number;
+  merchant_net_payout_paise: number | null;
 }
 
 // Timestamp column stamped when an order enters a state
@@ -143,6 +158,9 @@ function mapDetailRow(row: any): OrderDetailDto {
     deliveredAt: row.delivered_at?.toISOString(),
     cancelledAt: row.cancelled_at?.toISOString(),
     refundedPaise: row.refunded_paise ?? 0,
+    acquisitionChannel: (row.acquisition_channel as AcquisitionChannel | undefined) ?? AcquisitionChannel.MARKETPLACE,
+    commissionPaise: row.commission_paise ?? 0,
+    merchantNetPayoutPaise: row.merchant_net_payout_paise ?? undefined,
     rider: row.rider_name
       ? { name: row.rider_name, phone: row.rider_phone ?? undefined, vehicleType: row.rider_vehicle_type ?? undefined }
       : undefined,
@@ -230,10 +248,15 @@ export class OrderRepository {
              id, order_number, customer_id, restaurant_id, delivery_address_id,
              items_json, breakdown_json, fulfillment_state, payment_status,
              payable_paise, delivery_otp, pickup_otp, instructions, promised_delivery_at,
-             quote_id, coupon_code, delivery_address_snapshot
+             quote_id, coupon_code, delivery_address_snapshot,
+             acquisition_channel, commission_bp_applied, commission_paise,
+             merchant_order_fee_paise, merchant_net_payout_paise, order_type,
+             parent_order_id, slot_window, drop_point_id, slot_cutoff_at
            ) VALUES (
              gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'PENDING_PAYMENT', 'PENDING',
-             $7, $8, $9, $10, $11, $12, $13, $14
+             $7, $8, $9, $10, $11, $12, $13, $14,
+             $15, $16, $17, $18, $19, $20, $21, $22, $23,
+             $11::timestamptz - interval '30 minutes'
            ) RETURNING id`,
           [
             params.orderNumber,
@@ -250,6 +273,15 @@ export class OrderRepository {
             params.quoteId ?? null,
             params.couponCode ?? null,
             params.deliveryAddressSnapshot ? JSON.stringify(params.deliveryAddressSnapshot) : null,
+            params.acquisitionChannel ?? AcquisitionChannel.MARKETPLACE,
+            params.commissionBpApplied ?? null,
+            params.commissionPaise ?? 0,
+            params.merchantOrderFeePaise ?? 0,
+            params.merchantNetPayoutPaise ?? null,
+            params.orderType ?? "PRIMARY",
+            params.parentOrderId ?? null,
+            params.slotWindow ?? null,
+            params.dropPointId ?? null,
           ]
         );
         const orderId: string = orderRes.rows[0].id;
@@ -298,6 +330,14 @@ export class OrderRepository {
         await JobRepository.enqueueWithClient(client, JobKind.PAYMENT_EXPIRY, { orderId }, {
           runAt: new Date(Date.now() + PAYMENT_WINDOW_MINUTES * 60 * 1000),
           dedupeKey: `payment-expiry:${orderId}`,
+        });
+
+        // Fifteen minutes before the slot cutoff, prompt a one-tap add-on in the same crate.
+        const slotCutoffAt = new Date(promisedAt.getTime() - 30 * 60 * 1000);
+        const addonUpsellAt = new Date(slotCutoffAt.getTime() - 15 * 60 * 1000);
+        await JobRepository.enqueueWithClient(client, JobKind.ADDON_UPSELL, { parentOrderId: orderId }, {
+          runAt: addonUpsellAt,
+          dedupeKey: `addon-upsell:${orderId}`,
         });
 
         const responsePayload: Omit<CheckoutResult, "isDuplicate"> = {
@@ -462,7 +502,8 @@ export class OrderRepository {
   static async lockForUpdate(client: Queryable, orderId: string): Promise<LockedOrderRow> {
     const res = await client.query(
       `SELECT id, order_number, customer_id, restaurant_id, fulfillment_state, payment_status,
-              payable_paise, breakdown_json, version, prep_time_minutes
+              payable_paise, breakdown_json, version, prep_time_minutes,
+              acquisition_channel, commission_bp_applied, merchant_order_fee_paise, merchant_net_payout_paise
          FROM orders WHERE id = $1 FOR UPDATE`,
       [orderId]
     );
@@ -684,10 +725,13 @@ export class OrderRepository {
         return { outcome: alreadyPaid ? ("DUPLICATE_REFUNDED" as const) : ("MISMATCH_REFUNDED" as const) };
       }
 
-      const commissionRes = await client.query(`SELECT commission_bp FROM restaurants WHERE id = $1`, [
-        order.restaurant_id,
-      ]);
       const breakdown = order.breakdown_json;
+      const commissionBp =
+        order.commission_bp_applied ??
+        (
+          await client.query(`SELECT commission_bp FROM restaurants WHERE id = $1`, [order.restaurant_id])
+        ).rows[0]?.commission_bp ??
+        undefined;
       await LedgerRepository.postTransactionWithClient(client, {
         orderId: input.orderId,
         paymentId,
@@ -702,10 +746,25 @@ export class OrderRepository {
           discountPaise: breakdown.discountPaise,
           surgePaise: breakdown.surgePaise,
           tipPaise: breakdown.tipPaise ?? 0,
-          commissionRateBasisPoints: commissionRes.rows[0]?.commission_bp ?? undefined,
+          commissionRateBasisPoints: commissionBp,
+          merchantOrderFeePaise: order.merchant_order_fee_paise ?? 0,
         }),
       });
       await client.query(`UPDATE orders SET payment_status = 'CAPTURED', updated_at = NOW() WHERE id = $1`, [order.id]);
+
+      if (
+        order.acquisition_channel === AcquisitionChannel.MERCHANT_DIRECT_SESSION ||
+        order.acquisition_channel === AcquisitionChannel.MERCHANT_FIRST_ORIGIN
+      ) {
+        await client.query(
+          `UPDATE app_users
+              SET first_origin_restaurant_id = $2,
+                  first_origin_merchant_id = (SELECT merchant_id FROM restaurants WHERE id = $2),
+                  first_origin_at = NOW(), updated_at = NOW()
+            WHERE id = $1 AND first_origin_restaurant_id IS NULL`,
+          [order.customer_id, order.restaurant_id]
+        );
+      }
 
       if (OrderStateMachine.isTerminal(order.fulfillment_state)) {
         // Late capture on a dead order: never resurrect it, give the money back
@@ -766,6 +825,7 @@ export class OrderRepository {
     refundAmountPaise?: number;
     // When set, the order must currently be in one of these states (e.g. merchant reject)
     expectedStates?: FulfillmentState[];
+    faultCode?: FaultCode;
   }): Promise<{ fulfillmentState: FulfillmentState; refundedPaise: number }> {
     return withTransaction(async (client) => {
       const order = await OrderRepository.lockForUpdate(client, input.orderId);
@@ -817,6 +877,7 @@ export class OrderRepository {
           amountPaise: refundAmount,
           reason: input.reason,
           initiatedBy: input.actorId ? `${input.actor}:${input.actorId}` : input.actor,
+          faultCode: input.faultCode,
         });
         refundedPaise = refund?.amountPaise ?? 0;
       }

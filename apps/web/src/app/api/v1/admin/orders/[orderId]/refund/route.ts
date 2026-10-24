@@ -10,7 +10,7 @@ import { assertUuid, parseBody, route } from "@/server/route";
 export const POST = route<{ orderId: string }>(async (req, { params }, requestId) => {
   const auth = await requireAuth(req, [UserRole.ADMIN]);
   const orderId = assertUuid((await params).orderId, "order");
-  const { amountPaise, reason } = await parseBody(req, RefundRequestSchema);
+  const { amountPaise, reason, faultCode } = await parseBody(req, RefundRequestSchema);
 
   const refund = await withTransaction(async (client) => {
     await OrderRepository.lockForUpdate(client, orderId);
@@ -19,6 +19,7 @@ export const POST = route<{ orderId: string }>(async (req, { params }, requestId
       amountPaise,
       reason,
       initiatedBy: `ADMIN:${auth.user.id}`,
+      faultCode,
     });
   });
   if (!refund) throw new DomainError("STATE_CONFLICT", "This order has no captured payment left to refund.");

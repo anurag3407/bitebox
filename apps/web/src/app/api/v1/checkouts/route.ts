@@ -1,13 +1,22 @@
 import { createHash } from "node:crypto";
 import { CheckoutResponse, CreateCheckoutRequestSchema, QuoteBreakdown, QuoteLineBreakdown } from "@startup/contracts";
-import { DomainError, ServiceabilityPolicy, generateOrderNumber, generateVerificationOtp } from "@startup/core";
+import {
+  DomainError,
+  ServiceabilityPolicy,
+  SettlementCalculator,
+  generateOrderNumber,
+  generateVerificationOtp,
+  hashAttributionToken,
+} from "@startup/core";
 import {
   AddressRepository,
+  AttributionRepository,
   CheckoutResult,
   OrderRepository,
   RestaurantRepository,
   evaluateAvailability,
   getDb,
+  getDbPool,
   quotes,
 } from "@startup/database";
 import { ProviderUnavailableError, RazorpayAdapter } from "@startup/integrations";
@@ -20,6 +29,15 @@ import { parseBody, route } from "@/server/route";
 
 // A quote priced for map coordinates may be checked out to a saved address this close by
 const MAX_ADDRESS_DRIFT_METERS = 300;
+
+function cookieValue(header: string | null, name: string): string | undefined {
+  if (!header) return undefined;
+  for (const part of header.split(";")) {
+    const [key, ...rest] = part.trim().split("=");
+    if (key === name) return decodeURIComponent(rest.join("="));
+  }
+  return undefined;
+}
 
 function toResponse(result: CheckoutResult, simulatedPayment: boolean): CheckoutResponse {
   return {
@@ -40,9 +58,17 @@ export const POST = route(async (req, _ctx, requestId) => {
   await enforceRateLimit(req, "checkout", auth.user.id);
   const { quoteId, deliveryAddressId, instructions, idempotencyKey } = await parseBody(req, CreateCheckoutRequestSchema);
   const razorpay = new RazorpayAdapter();
+  const attributionToken = cookieValue(req.headers.get("cookie"), "mp_attr");
 
   const requestHash = createHash("sha256")
-    .update(JSON.stringify({ quoteId, deliveryAddressId, instructions: instructions ?? "" }))
+    .update(
+      JSON.stringify({
+        quoteId,
+        deliveryAddressId,
+        instructions: instructions ?? "",
+        attribution: attributionToken ? hashAttributionToken(attributionToken) : "",
+      })
+    )
     .digest("hex");
 
   // 1. Replayed request (double tap, network retry): answer without touching the gateway
@@ -110,6 +136,39 @@ export const POST = route(async (req, _ctx, requestId) => {
   const breakdown = quote.breakdownJson as QuoteBreakdown;
   const items = quote.itemsJson as QuoteLineBreakdown[];
 
+  // Attribution is locked at checkout: 24h signed session, then lifetime first origin,
+  // then marketplace. Commission is snapshotted on the order so later rate changes
+  // cannot rewrite what the merchant was promised.
+  const acquisitionChannel = await AttributionRepository.resolveCheckoutAttribution({
+    customerId: auth.user.id,
+    restaurantId: quote.restaurantId,
+    token: attributionToken,
+  });
+  const configRes = await getDbPool().query(
+    `SELECT commission_bp, commission_min_paise, commission_max_paise,
+            direct_order_flat_fee_paise, first_origin_cap_paise
+       FROM restaurants WHERE id = $1`,
+    [quote.restaurantId]
+  );
+  const config = configRes.rows[0];
+  if (!config) throw new DomainError("NOT_FOUND", "Restaurant pricing configuration not found");
+  const commission = SettlementCalculator.calculateCommission({
+    subtotalPaise: breakdown.subtotalPaise,
+    channel: acquisitionChannel,
+    policy: {
+      commissionBp: config.commission_bp,
+      commissionMinPaise: config.commission_min_paise,
+      commissionMaxPaise: config.commission_max_paise,
+      directOrderFlatFeePaise: config.direct_order_flat_fee_paise,
+      firstOriginCapPaise: config.first_origin_cap_paise,
+    },
+  });
+  const merchantNetPayoutPaise = SettlementCalculator.merchantEarningAfterFees(
+    breakdown,
+    commission.commissionPaise,
+    commission.merchantOrderFeePaise
+  );
+
   // 6. Gateway order first (external, cannot join our transaction). If the DB write
   // below fails the provider order is simply never paid and expires.
   let razorpayOrderId: string;
@@ -152,6 +211,13 @@ export const POST = route(async (req, _ctx, requestId) => {
         razorpayOrderId,
         quoteId,
         couponCode: quote.couponCode ?? undefined,
+        acquisitionChannel,
+        commissionBpApplied: commission.commissionBpApplied,
+        commissionPaise: commission.commissionPaise,
+        merchantOrderFeePaise: commission.merchantOrderFeePaise,
+        merchantNetPayoutPaise,
+        slotWindow: quote.slotWindow ?? undefined,
+        dropPointId: quote.dropPointId ?? undefined,
         deliveryAddressSnapshot: {
           label: address.label,
           building: address.building,

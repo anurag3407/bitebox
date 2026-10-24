@@ -1,4 +1,10 @@
-import { QuoteBreakdown } from "@startup/contracts";
+import { AcquisitionChannel, QuoteBreakdown } from "@startup/contracts";
+import { priceOneTapAddon } from "../addons/addon-upsell.js";
+import {
+  SettlementCalculator,
+  type CommissionCalculation,
+  type CommissionPolicy,
+} from "../payouts/settlement.js";
 
 export interface PricingLineItem {
   basePricePaise: number;
@@ -21,6 +27,7 @@ export interface PricingInput {
   surgeMultiplier?: number;
   coupon?: CouponDiscountRule;
   tipPaise?: number;
+  deliveryFeeOverridePaise?: number;
 }
 
 export type CouponEvaluation =
@@ -111,12 +118,27 @@ export class PricingCalculator {
     return { applicable: true, discountPaise };
   }
 
-  static calculate(input: PricingInput): QuoteBreakdown {
-    // 1. Calculate subtotal
+  static calculateAddon(input: Parameters<typeof priceOneTapAddon>[0]) {
+    return priceOneTapAddon(input);
+  }
+
+  /** Channel-aware capped/floored commission; exact paise math lives in SettlementCalculator. */
+  static calculateCommission(input: {
+    subtotalPaise: number;
+    channel: AcquisitionChannel;
+    policy: CommissionPolicy;
+  }): CommissionCalculation {
+    return SettlementCalculator.calculateCommission(input);
+  }
+
+  static calculate(input: PricingInput): QuoteBreakdown {    // 1. Calculate subtotal
     const subtotalPaise = PricingCalculator.calculateSubtotal(input.lines);
 
-    // 2. Calculate delivery fee based on distance
-    const deliveryFeePaise = PricingCalculator.calculateDeliveryFee(input.distanceMeters);
+    // 2. Calculate delivery fee based on distance (or an explicit batch-slot quote)
+    const deliveryFeePaise =
+      input.deliveryFeeOverridePaise !== undefined
+        ? Math.max(0, Math.round(input.deliveryFeeOverridePaise))
+        : PricingCalculator.calculateDeliveryFee(input.distanceMeters);
 
     // Surge is bounded so a misconfigured multiplier cannot produce an abusive fee
     const surgeMultiplier = Math.min(

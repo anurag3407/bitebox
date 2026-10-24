@@ -9,6 +9,7 @@ import {
 } from "@startup/core";
 import {
   AddressRepository,
+  BatchRepository,
   CouponRepository,
   RestaurantRepository,
   evaluateAvailability,
@@ -30,10 +31,8 @@ const QUOTE_TTL_MINUTES = 10;
 export const POST = route(async (req, _ctx, requestId) => {
   const auth = await requireAuth(req);
   await enforceRateLimit(req, "quote", auth.user.id);
-  const { restaurantId, deliveryAddressId, destinationLocation, items, couponCode, tipPaise } = await parseBody(
-    req,
-    CreateQuoteRequestSchema
-  );
+  const { restaurantId, deliveryAddressId, destinationLocation, items, couponCode, tipPaise, dropPointId, slotWindow } =
+    await parseBody(req, CreateQuoteRequestSchema);
 
   // 1. Restaurant must exist and be taking orders right now
   const restaurant = await RestaurantRepository.findById(restaurantId);
@@ -169,6 +168,15 @@ export const POST = route(async (req, _ctx, requestId) => {
     packagingFeePaise: restaurant.packagingFeePaise,
     coupon: couponRule,
     tipPaise,
+    deliveryFeeOverridePaise:
+      dropPointId && slotWindow
+        ? (
+            await BatchRepository.quoteSlot({
+              dropPointId,
+              slotWindow,
+            })
+          ).currentDeliveryFeePaise
+        : undefined,
   });
 
   const eta = EtaCalculator.calculate({
@@ -193,6 +201,8 @@ export const POST = route(async (req, _ctx, requestId) => {
       distanceMeters: roadRoute.distanceMeters,
       destinationLatitude: destination.latitude,
       destinationLongitude: destination.longitude,
+      dropPointId: dropPointId ?? null,
+      slotWindow: slotWindow ?? null,
       expiresAt,
     })
     .returning();

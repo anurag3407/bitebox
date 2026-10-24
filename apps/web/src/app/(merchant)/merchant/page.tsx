@@ -6,6 +6,7 @@ import { Bell, ChefHat, Clock, KeyRound, Package, Volume2, VolumeX, X } from "lu
 import { OrderDetailDto } from "@startup/contracts";
 import { PortalHeader, RoleGate } from "@/components/portal/role-gate";
 import { MenuEditor } from "@/components/merchant/menu-editor";
+import { MerchantGrowthPanel } from "@/components/merchant/merchant-growth-panel";
 import { OutletSettings } from "@/components/merchant/outlet-settings";
 import { EarningsPanel } from "@/components/payouts/earnings-panel";
 import { useSearchParams } from "next/navigation";
@@ -147,12 +148,13 @@ function OrderCard({ order, restaurantId }: { order: OrderDetailDto; restaurantI
   );
 }
 
-type Tab = "live" | "menu" | "outlet" | "earnings" | "history";
+type Tab = "live" | "menu" | "outlet" | "growth" | "earnings" | "history";
 const ALL_STAFF = ["OWNER", "MANAGER", "KITCHEN", "CATALOG_EDITOR"];
 const TABS: Array<{ id: Tab; label: string; roles: string[] }> = [
   { id: "live", label: "Live orders", roles: ALL_STAFF },
   { id: "menu", label: "Menu", roles: ALL_STAFF },
   { id: "outlet", label: "Outlet & staff", roles: ["OWNER", "MANAGER"] },
+  { id: "growth", label: "Growth", roles: ["OWNER"] },
   { id: "earnings", label: "Earnings", roles: ["OWNER"] },
   { id: "history", label: "History", roles: ALL_STAFF },
 ];
@@ -282,6 +284,7 @@ function MerchantConsole() {
         )}
         {tab === "menu" && restaurant && <MenuEditor restaurantId={restaurant.id} canEdit={["OWNER", "MANAGER", "CATALOG_EDITOR"].includes(restaurant.staffRole)} />}
         {tab === "outlet" && restaurant && <OutletSettings key={restaurant.id} restaurantId={restaurant.id} isOwner={restaurant.staffRole === "OWNER"} />}
+        {tab === "growth" && restaurant && <MerchantGrowthPanel restaurantId={restaurant.id} />}
         {tab === "earnings" && restaurant && (
           <EarningsPanel
             queryKey={["merchant-earnings", restaurant.id]}

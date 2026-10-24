@@ -1,5 +1,5 @@
 import { FulfillmentState } from "@startup/contracts";
-import { DomainError, isDomainError } from "@startup/core";
+import { DomainError, isDomainError, signAddonAction } from "@startup/core";
 import {
   ClaimedJob,
   DISPATCHABLE_STATES,
@@ -11,6 +11,9 @@ import {
   RiderRepository,
   InvoiceRepository,
   PayoutRepository,
+  AddonRepository,
+  BatchRepository,
+  MealPassRepository,
   getDbPool,
 } from "@startup/database";
 import {
@@ -356,6 +359,46 @@ export async function handleWeeklySettlement(job: ClaimedJob): Promise<void> {
   if (created.length) logger.info("settlement created payouts", { cutoff: cutoff.toISOString(), count: created.length });
 }
 
+async function handleMealPassDailyGeneration(job: ClaimedJob): Promise<void> {
+  const date =
+    typeof job.payload.date === "string"
+      ? new Date(job.payload.date)
+      : new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const result = await MealPassRepository.generateDailyDeliveries(date);
+  if (result.created > 0) {
+    logger.info("meal pass deliveries generated", { date: date.toISOString(), created: result.created });
+  }
+}
+
+async function handleAddonUpsell(job: ClaimedJob): Promise<void> {
+  const parentOrderId = typeof job.payload.parentOrderId === "string" ? job.payload.parentOrderId : null;
+  if (!parentOrderId) return;
+  const skus = await AddonRepository.listUpsell(parentOrderId);
+  if (skus.length === 0) return;
+  const secret = process.env.ADDON_SIGNING_SECRET ?? "dev-addon-signing-secret";
+  const exp = Math.floor(Date.now() / 1000) + 15 * 60;
+  const signedSkus = skus.map((sku) => ({
+    ...sku,
+    actionToken: signAddonAction({ parentOrderId, addonSkuId: sku.id, exp }, secret),
+    expiresAt: new Date(exp * 1000).toISOString(),
+  }));
+  await getDbPool().query(
+    `INSERT INTO outbox_events (id, event_type, aggregate_id, aggregate_version, payload_json, status)
+     VALUES (gen_random_uuid(), 'addon.upsell', $1, 1, $2, 'PENDING')`,
+    [parentOrderId, JSON.stringify({ parentOrderId, skus: signedSkus })]
+  );
+}
+
+async function handleLockDispatchBatch(job: ClaimedJob): Promise<void> {
+  const clusterId = typeof job.payload.clusterId === "string" ? job.payload.clusterId : null;
+  const slotWindow = typeof job.payload.slotWindow === "string" ? job.payload.slotWindow : null;
+  const slotStart = typeof job.payload.slotStart === "string" ? new Date(job.payload.slotStart) : null;
+  const slotEnd = typeof job.payload.slotEnd === "string" ? new Date(job.payload.slotEnd) : null;
+  if (!clusterId || !slotWindow || !slotStart || !slotEnd) return;
+  const result = await BatchRepository.lockBatch({ clusterId, slotWindow, slotStart, slotEnd });
+  if (result) logger.info("dispatch batch locked", { batchId: result.batch.id, orders: result.orders });
+}
+
 export const JOB_HANDLERS: Record<string, (job: ClaimedJob) => Promise<void>> = {
   [JobKind.ISSUE_INVOICE]: handleIssueInvoice,
   [JobKind.ISSUE_CREDIT_NOTE]: handleIssueCreditNote,
@@ -369,6 +412,9 @@ export const JOB_HANDLERS: Record<string, (job: ClaimedJob) => Promise<void>> = 
   [JobKind.REFUND_SUBMIT]: (job) => handleRefundSubmit(job),
   [JobKind.REFUND_STATUS_CHECK]: (job) => handleRefundStatusCheck(job),
   [JobKind.MAINTENANCE]: () => handleMaintenance(),
+  [JobKind.MEAL_PASS_DAILY_GENERATION]: handleMealPassDailyGeneration,
+  [JobKind.ADDON_UPSELL]: handleAddonUpsell,
+  [JobKind.LOCK_DISPATCH_BATCH]: handleLockDispatchBatch,
 };
 
 export { DomainError };

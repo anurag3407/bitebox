@@ -1,5 +1,11 @@
 import type { PoolClient } from "pg";
-import { DomainError, LedgerEngine } from "@startup/core";
+import { FaultCode, QuoteBreakdown } from "@startup/contracts";
+import {
+  DomainError,
+  LedgerEngine,
+  calculateRefundAllocation,
+  deriveMerchantDelayFault,
+} from "@startup/core";
 import { getDbPool, withTransaction } from "../client.js";
 import { JobKind, JobRepository } from "./job.repository.js";
 import { LedgerRepository } from "./ledger.repository.js";
@@ -15,6 +21,7 @@ export interface IssueRefundInput {
   paymentId?: string;
   // Duplicate captures are refunded without touching the order's refunded balance
   isDuplicateCapture?: boolean;
+  faultCode?: FaultCode;
 }
 
 export interface IssuedRefund {
@@ -78,11 +85,46 @@ export class RefundRepository {
       );
     }
 
+    const orderRes = await client.query(
+      `SELECT merchant_net_payout_paise, breakdown_json, ready_at, accepted_at, prep_time_minutes
+         FROM orders WHERE id = $1`,
+      [input.orderId]
+    );
+    const order = orderRes.rows[0];
+    const breakdown = (order?.breakdown_json ?? {}) as QuoteBreakdown;
+    const faultCode =
+      input.faultCode ??
+      deriveMerchantDelayFault({
+        readyAt: order?.ready_at ?? null,
+        acceptedAt: order?.accepted_at ?? null,
+        prepTimeMinutes: order?.prep_time_minutes ?? null,
+      }) ??
+      FaultCode.PLATFORM_GOODWILL;
+    const allocation = calculateRefundAllocation({
+      refundAmountPaise: amount,
+      merchantNetPayoutPaise: order?.merchant_net_payout_paise ?? 0,
+      faultCode,
+      taxPaise: breakdown.taxPaise,
+      orderPayablePaise: breakdown.payablePaise,
+    });
+
     const refundRes = await client.query(
-      `INSERT INTO refunds (id, order_id, payment_id, status, amount_paise, reason, initiated_by)
-       VALUES (gen_random_uuid(), $1, $2, 'APPROVED', $3, $4, $5)
+      `INSERT INTO refunds
+         (id, order_id, payment_id, status, amount_paise, reason, initiated_by,
+          fault_code, merchant_recovery_bp, merchant_deduction_paise, tax_adjustment_paise)
+       VALUES (gen_random_uuid(), $1, $2, 'APPROVED', $3, $4, $5, $6, $7, $8, $9)
        RETURNING id`,
-      [input.orderId, payment.id, amount, input.reason, input.initiatedBy]
+      [
+        input.orderId,
+        payment.id,
+        amount,
+        input.reason,
+        input.initiatedBy,
+        allocation.faultCode,
+        allocation.merchantRecoveryBp,
+        allocation.merchantDeductionPaise,
+        allocation.taxAdjustmentPaise,
+      ]
     );
     const refundId: string = refundRes.rows[0].id;
 
@@ -93,6 +135,32 @@ export class RefundRepository {
       effectType: "REFUND",
       entries: LedgerEngine.buildRefundEntries(amount, input.reason),
     });
+
+    if (allocation.merchantDeductionPaise > 0) {
+      await LedgerRepository.postTransactionWithClient(client, {
+        orderId: input.orderId,
+        paymentId: payment.id,
+        refundId,
+        effectType: "REFUND",
+        entries: LedgerEngine.buildFaultAllocatedRefundEntries(
+          {
+            refundAmountPaise: amount,
+            merchantDeductionPaise: allocation.merchantDeductionPaise,
+            platformRefundExpensePaise: allocation.platformRefundExpensePaise,
+          },
+          input.reason
+        ),
+      });
+    }
+    if (allocation.taxAdjustmentPaise > 0) {
+      await LedgerRepository.postTransactionWithClient(client, {
+        orderId: input.orderId,
+        paymentId: payment.id,
+        refundId,
+        effectType: "REFUND",
+        entries: LedgerEngine.buildTaxRefundAdjustmentEntries(allocation.taxAdjustmentPaise, input.reason),
+      });
+    }
 
     if (!input.isDuplicateCapture) {
       await RefundRepository.refreshOrderRefundTotalsWithClient(client, input.orderId);
@@ -183,8 +251,8 @@ export class RefundRepository {
       const res = await client.query(
         // Our own id is authoritative; the provider id is only used when we lack it (webhooks)
         input.refundId
-          ? `SELECT id, order_id, payment_id, status, amount_paise, reason FROM refunds WHERE id = $1 FOR UPDATE`
-          : `SELECT id, order_id, payment_id, status, amount_paise, reason FROM refunds WHERE provider_refund_id = $1 FOR UPDATE`,
+          ? `SELECT id, order_id, payment_id, status, amount_paise, reason, merchant_deduction_paise, tax_adjustment_paise FROM refunds WHERE id = $1 FOR UPDATE`
+          : `SELECT id, order_id, payment_id, status, amount_paise, reason, merchant_deduction_paise, tax_adjustment_paise FROM refunds WHERE provider_refund_id = $1 FOR UPDATE`,
         [input.refundId ?? input.providerRefundId]
       );
       const refund = res.rows[0];
@@ -224,6 +292,34 @@ export class RefundRepository {
             creditPaise: e.debitPaise,
           })),
         });
+        if (refund.merchant_deduction_paise > 0) {
+          await LedgerRepository.postTransactionWithClient(client, {
+            orderId: refund.order_id,
+            paymentId: refund.payment_id,
+            refundId: refund.id,
+            effectType: "REFUND",
+            entries: LedgerEngine.buildFaultAllocatedRefundEntries(
+              {
+                refundAmountPaise: refund.amount_paise,
+                merchantDeductionPaise: refund.merchant_deduction_paise,
+                platformRefundExpensePaise: refund.amount_paise - refund.merchant_deduction_paise,
+              },
+              `Reversal: ${refund.reason}`
+            ).map((e) => ({ ...e, debitPaise: e.creditPaise, creditPaise: e.debitPaise })),
+          });
+        }
+        if (refund.tax_adjustment_paise > 0) {
+          await LedgerRepository.postTransactionWithClient(client, {
+            orderId: refund.order_id,
+            paymentId: refund.payment_id,
+            refundId: refund.id,
+            effectType: "REFUND",
+            entries: LedgerEngine.buildTaxRefundAdjustmentEntries(
+              refund.tax_adjustment_paise,
+              `Reversal: ${refund.reason}`
+            ).map((e) => ({ ...e, debitPaise: e.creditPaise, creditPaise: e.debitPaise })),
+          });
+        }
         await client.query(`SELECT id FROM orders WHERE id = $1 FOR UPDATE`, [refund.order_id]);
         await RefundRepository.refreshOrderRefundTotalsWithClient(client, refund.order_id);
       }

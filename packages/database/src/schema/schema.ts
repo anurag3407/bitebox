@@ -224,6 +224,8 @@ export const quotes = pgTable("quotes", {
   distanceMeters: integer("distance_meters"),
   destinationLatitude: doublePrecision("destination_latitude"),
   destinationLongitude: doublePrecision("destination_longitude"),
+  dropPointId: uuid("drop_point_id"),
+  slotWindow: text("slot_window"),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

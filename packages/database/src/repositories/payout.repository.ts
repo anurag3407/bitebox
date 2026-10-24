@@ -118,19 +118,26 @@ export class PayoutRepository {
     const pool = getDbPool();
     if (ownerType === "MERCHANT") {
       const res = await pool.query(
-        `SELECT o.id, o.breakdown_json, o.delivered_at, r.merchant_id, r.commission_bp
+        `SELECT o.id, o.breakdown_json, o.delivered_at, o.merchant_net_payout_paise, r.merchant_id, r.commission_bp,
+                COALESCE((
+                  SELECT SUM(rf.merchant_deduction_paise) FROM refunds rf
+                   WHERE rf.order_id = o.id AND rf.status <> 'FAILED'
+                ), 0)::int AS refund_deduction
            FROM orders o JOIN restaurants r ON r.id = o.restaurant_id
           WHERE o.fulfillment_state = 'DELIVERED' AND o.delivered_at < $1
             AND ($2::uuid IS NULL OR r.merchant_id = $2::uuid)
             AND NOT EXISTS (SELECT 1 FROM payout_items pi WHERE pi.order_id = o.id AND pi.owner_type = 'MERCHANT')`,
         [cutoff.toISOString(), ownerId ?? null]
       );
-      return res.rows.map((r) => ({
-        orderId: r.id,
-        ownerId: r.merchant_id,
-        amountPaise: SettlementCalculator.merchantEarning(r.breakdown_json as QuoteBreakdown, r.commission_bp),
-        deliveredAt: r.delivered_at,
-      }));
+      return res.rows.map((r) => {
+        const gross = r.merchant_net_payout_paise ?? SettlementCalculator.merchantEarning(r.breakdown_json as QuoteBreakdown, r.commission_bp);
+        return {
+          orderId: r.id,
+          ownerId: r.merchant_id,
+          amountPaise: Math.max(0, gross - Number(r.refund_deduction ?? 0)),
+          deliveredAt: r.delivered_at,
+        };
+      });
     }
     const res = await pool.query(
       `SELECT o.id, o.breakdown_json, o.delivered_at, da.rider_id

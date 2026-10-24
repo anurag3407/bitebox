@@ -1,7 +1,9 @@
 import { z } from "zod";
 import {
+  AcquisitionChannel,
   Currency,
   DietaryTag,
+  FaultCode,
   FulfillmentState,
   PaymentStatus,
   RefundStatus,
@@ -229,6 +231,8 @@ export const CreateQuoteRequestSchema = z
     items: z.array(CartItemInputSchema).min(1).max(50),
     couponCode: z.string().trim().max(30).optional(),
     tipPaise: z.number().int().min(0).max(MAX_TIP_PAISE).default(0),
+    dropPointId: z.string().uuid().optional(),
+    slotWindow: z.string().regex(/^\d{2}:\d{2}-\d{2}:\d{2}$/).optional(),
   })
   .refine((v) => v.deliveryAddressId || v.destinationLocation, {
     message: "A delivery address or location is required to price the order",
@@ -361,6 +365,9 @@ export const OrderDetailDtoSchema = z.object({
   deliveredAt: z.string().optional(),
   cancelledAt: z.string().optional(),
   refundedPaise: z.number().int().nonnegative().optional(),
+  acquisitionChannel: z.nativeEnum(AcquisitionChannel).optional(),
+  commissionPaise: z.number().int().nonnegative().optional(),
+  merchantNetPayoutPaise: z.number().int().nonnegative().optional(),
   rider: z
     .object({
       name: z.string(),
@@ -501,12 +508,14 @@ export type ManualAssignRiderRequest = z.infer<typeof ManualAssignRiderRequestSc
 export const RefundRequestSchema = z.object({
   amountPaise: z.number().int().positive(),
   reason: z.string().trim().min(3).max(300),
+  faultCode: z.nativeEnum(FaultCode).optional(),
 });
 
 export const AdminCancelOrderRequestSchema = z.object({
   reason: z.string().trim().min(3).max(300),
   // Defaults to the full refundable balance when omitted; 0 means cancel without refund
   refundAmountPaise: z.number().int().nonnegative().optional(),
+  faultCode: z.nativeEnum(FaultCode).optional(),
 });
 
 export const CustomerCancelOrderRequestSchema = z.object({

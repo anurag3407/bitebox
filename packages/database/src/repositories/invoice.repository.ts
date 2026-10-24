@@ -34,6 +34,8 @@ export interface CreditNoteData {
   cgstPaise: number;
   sgstPaise: number;
   reason: string;
+  faultCode?: string;
+  merchantDeductionPaise?: number;
 }
 
 /** Next number in a gapless per-FY series; the row lock serialises issuers and rolls back with the transaction. */
@@ -112,7 +114,8 @@ export class InvoiceRepository {
       const existing = await client.query(`SELECT credit_note_number FROM credit_notes WHERE refund_id = $1`, [refundId]);
       if (existing.rows[0]) return existing.rows[0].credit_note_number;
       const res = await client.query(
-        `SELECT r.amount_paise, r.reason, r.status, i.id AS invoice_id, i.invoice_number, i.data_json
+        `SELECT r.amount_paise, r.reason, r.status, r.fault_code, r.merchant_deduction_paise,
+                i.id AS invoice_id, i.invoice_number, i.data_json
            FROM refunds r JOIN invoices i ON i.order_id = r.order_id WHERE r.id = $1`,
         [refundId]
       );
@@ -132,11 +135,26 @@ export class InvoiceRepository {
         taxablePaise: taxable,
         ...splitIntraState(row.amount_paise - taxable),
         reason: row.reason,
+        faultCode: row.fault_code,
+        merchantDeductionPaise: row.merchant_deduction_paise,
       };
       await client.query(
-        `INSERT INTO credit_notes (invoice_id, refund_id, credit_note_number, financial_year, seq, amount_paise, data_json, issued_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [row.invoice_id, refundId, number, fy, seq, row.amount_paise, JSON.stringify(data), issuedAt.toISOString()]
+        `INSERT INTO credit_notes
+           (invoice_id, refund_id, credit_note_number, financial_year, seq, amount_paise,
+            data_json, issued_at, fault_code, merchant_deduction_paise)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [
+          row.invoice_id,
+          refundId,
+          number,
+          fy,
+          seq,
+          row.amount_paise,
+          JSON.stringify(data),
+          issuedAt.toISOString(),
+          row.fault_code,
+          row.merchant_deduction_paise,
+        ]
       );
       return number;
     });

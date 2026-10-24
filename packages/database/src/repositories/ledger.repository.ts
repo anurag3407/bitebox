@@ -10,7 +10,7 @@ export class LedgerRepository {
       orderId?: string;
       paymentId?: string;
       refundId?: string;
-      effectType: "CAPTURE" | "REFUND" | "PAYOUT";
+      effectType: "CAPTURE" | "REFUND" | "PAYOUT" | "MEAL_PASS" | "CAPTAIN" | "ADJUSTMENT";
       entries: LedgerEntry[];
     }
   ): Promise<string> {
@@ -47,7 +47,7 @@ export class LedgerRepository {
     orderId?: string;
     paymentId?: string;
     refundId?: string;
-    effectType: "CAPTURE" | "REFUND" | "PAYOUT";
+    effectType: "CAPTURE" | "REFUND" | "PAYOUT" | "MEAL_PASS" | "CAPTAIN" | "ADJUSTMENT";
     entries: LedgerEntry[];
   }): Promise<string> {
     const pool = getDbPool();

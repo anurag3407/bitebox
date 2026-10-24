@@ -191,6 +191,46 @@ export interface Earnings {
   account: { accountHolderName: string; ifsc: string; accountLast4: string; updatedAt: string } | null;
 }
 
+export interface MerchantAnalyticsChannel {
+  channel: string;
+  orders: number;
+  gmvPaise: number;
+  platformFeesPaise: number;
+  merchantPayoutPaise: number;
+  onTimeOrders: number;
+  deliveredOrders: number;
+  defectRefunds: number;
+  refundedOrders: number;
+  gmvSharePercent: number;
+}
+
+export interface MerchantAnalytics {
+  restaurantId: string;
+  startDate: string;
+  endDate: string;
+  totalOrders: number;
+  totalGmvPaise: number;
+  totalPlatformFeesPaise: number;
+  totalMerchantPayoutPaise: number;
+  effectiveTakeRatePercent: number;
+  incumbentBenchmarkPaise: number;
+  netRupeesSavedPaise: number;
+  onTimeHandoverRatePercent: number;
+  defectRefundRatePercent: number;
+  reliabilityRebateEligible: boolean;
+  reliabilityRebateBp: number;
+  reliabilityRebatePaise: number;
+  channels: MerchantAnalyticsChannel[];
+}
+
+export interface MerchantAttributionLink {
+  restaurantId: string;
+  slug: string;
+  url: string;
+  token: string;
+  expiresAt: string;
+}
+
 export interface EditableMenuItem extends MenuItemInputRaw {
   id: string;
 }
@@ -647,6 +687,14 @@ export class ApiClient {
   // 11. Earnings & payouts
   async getMerchantEarnings(restaurantId: string): Promise<Earnings> {
     return this.request(`/api/v1/merchant/restaurants/${restaurantId}/earnings`);
+  }
+
+  async getMerchantAnalytics(restaurantId: string, range?: { from?: string; to?: string }): Promise<MerchantAnalytics> {
+    return this.request(`/api/v1/merchant/restaurants/${restaurantId}/analytics${qs(range ?? {})}`);
+  }
+
+  async getMerchantAttributionLink(restaurantId: string): Promise<MerchantAttributionLink> {
+    return this.request(`/api/v1/merchant/restaurants/${restaurantId}/attribution-link`);
   }
 
   async saveMerchantPayoutAccount(restaurantId: string, account: { accountHolderName: string; ifsc: string; accountNumber: string }): Promise<{ accountLast4: string }> {
