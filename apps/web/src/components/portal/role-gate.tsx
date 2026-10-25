@@ -2,32 +2,36 @@
 
 import React from "react";
 import Link from "next/link";
+import { Lock } from "lucide-react";
 import { useAuth } from "@/features/auth/auth-context";
 import { useMe } from "@/lib/api";
-import { Spinner } from "@/components/ui/misc";
+import { LogoMark } from "@/components/brand/logo";
+import { EmptyState, PageSpinner } from "@/components/ui/misc";
 
 /** Client-side convenience gate; the API enforces the same roles server-side. */
 export function RoleGate({ roles, title, children }: { roles: string[]; title: string; children: React.ReactNode }) {
   const { isLoaded, isSignedIn } = useAuth();
   const me = useMe();
 
-  if (!isLoaded || (isSignedIn && me.isPending)) {
-    return (
-      <div className="min-h-[60vh] flex items-center justify-center">
-        <Spinner className="w-6 h-6 text-brand" />
-      </div>
-    );
-  }
+  if (!isLoaded || (isSignedIn && me.isPending)) return <PageSpinner />;
   if (!isSignedIn || !me.data || !roles.includes(me.data.role)) {
     return (
-      <div className="max-w-md mx-auto my-20 p-8 text-center rounded-3xl border border-border bg-surface-muted">
-        <h1 className="text-xl font-black">{title}</h1>
-        <p className="text-sm text-text-secondary mt-2">
-          {isSignedIn ? "Your account does not have access to this area." : "Sign in with an authorised account to continue."}
-        </p>
-        <Link href={`/sign-in?redirect_url=${encodeURIComponent(typeof window !== "undefined" ? window.location.pathname : "/")}`} className="inline-block mt-5 px-5 py-2.5 bg-brand text-white text-sm font-bold rounded-xl">
-          {isSignedIn ? "Switch account" : "Sign in"}
-        </Link>
+      <div className="flex min-h-screen items-center justify-center">
+        <EmptyState
+          icon={<Lock />}
+          title={title}
+          body={isSignedIn ? "Your account doesn't have access to this area." : "Sign in with an authorised account to continue."}
+          action={
+            <div className="flex flex-wrap justify-center gap-3">
+              <Link href="/" className="btn btn-secondary">
+                Go home
+              </Link>
+              <Link href={`/sign-in?redirect_url=${encodeURIComponent(typeof window !== "undefined" ? window.location.pathname : "/")}`} className="btn btn-primary">
+                {isSignedIn ? "Switch account" : "Sign in"}
+              </Link>
+            </div>
+          }
+        />
       </div>
     );
   }
@@ -36,14 +40,20 @@ export function RoleGate({ roles, title, children }: { roles: string[]; title: s
 
 export function PortalHeader({ title, right }: { title: string; right?: React.ReactNode }) {
   return (
-    <header className="sticky top-0 z-30 bg-text-primary text-white pt-[env(safe-area-inset-top)]">
-      <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between gap-3">
-        <Link href="/" className="flex items-center gap-2 font-black">
-          <img src="/icons/icon-192.png" alt="" className="w-7 h-7 rounded-lg" />
-          <span className="text-sm sm:text-base">{title}</span>
+    <header className="sticky top-0 z-30 border-b border-line bg-white/90 pt-[env(safe-area-inset-top)] backdrop-blur-xl">
+      <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-5 sm:px-8">
+        <Link href="/" className="flex min-w-0 items-center gap-3" aria-label="BiteBox home">
+          <LogoMark className="h-7 w-7 shrink-0" />
+          <span className="h-5 w-px bg-line" aria-hidden />
+          <span className="truncate text-[15px] font-medium text-ink">{title}</span>
         </Link>
-        <div className="flex items-center gap-2">{right}</div>
+        <div className="flex shrink-0 items-center gap-2">{right}</div>
       </div>
     </header>
   );
+}
+
+/** Standard content width for portal pages. */
+export function PortalBody({ children, narrow }: { children: React.ReactNode; narrow?: boolean }) {
+  return <div className={`mx-auto w-full px-5 pb-16 pt-8 sm:px-8 sm:pt-10 ${narrow ? "max-w-xl" : "max-w-7xl"}`}>{children}</div>;
 }

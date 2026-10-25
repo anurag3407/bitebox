@@ -37,6 +37,7 @@ export const useLocationStore = create<LocationState>()(
     {
       name: "food_delivery_location_v2",
       version: 2,
+      skipHydration: true,
       // v1 shipped a hard-coded demo address for everyone; drop it
       migrate: () => ({ location: null, label: null, addressId: null }),
     }

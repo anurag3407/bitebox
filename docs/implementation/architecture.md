@@ -2,7 +2,7 @@
 
 ## 1. Architectural Philosophy & Overview
 
-The ZomatoFresh platform is structured as a **clean modular monolith with an independent durable background worker**, prioritizing:
+The BiteBox platform is structured as a **clean modular monolith with an independent durable background worker**, prioritizing:
 1. **Financial and State Correctness**: Money calculations are strictly executed in integer paise using value objects. State transitions are strictly governed by formal state machine transition tables.
 2. **PostgreSQL as the Single Durable Truth**: PostgreSQL 15+ holds all transactional entities, state transitions, idempotency records, ledger entries, and durable job queues (`SKIP LOCKED`). Redis serves exclusively as an ephemeral cache and hot rider telemetry buffer—never financial truth.
 3. **Decoupled Architecture with Clean Boundaries**:

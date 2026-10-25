@@ -1,99 +1,59 @@
 "use client";
 
 import React from "react";
-import Image from "next/image";
+import { SafeImage } from "@/components/ui/misc";
 
-export interface CuisineItem {
-  id: string;
-  name: string;
+interface CuisineItem {
+  label: string;
+  // Matched case-insensitively against restaurant cuisines on the server, so it must
+  // be the catalogue's spelling (e.g. "Tandoor"), not the display label
+  value: string;
   imageUrl: string;
 }
 
+const img = (id: string) => `https://images.unsplash.com/${id}?auto=format&fit=crop&w=240&h=240&q=70`;
+
 const POPULAR_CUISINES: CuisineItem[] = [
-  {
-    id: "biryani",
-    name: "Biryani",
-    imageUrl: "https://images.unsplash.com/photo-1589302168068-964664d93dc0?auto=format&fit=crop&w=300&q=80",
-  },
-  {
-    id: "north-indian",
-    name: "North Indian",
-    imageUrl: "https://images.unsplash.com/photo-1603894584373-5ac82b2ae398?auto=format&fit=crop&w=300&q=80",
-  },
-  {
-    id: "pizza",
-    name: "Pizza",
-    imageUrl: "https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=300&q=80",
-  },
-  {
-    id: "burgers",
-    name: "Burgers",
-    imageUrl: "https://images.unsplash.com/photo-1568901346375-23c9450c58cd?auto=format&fit=crop&w=300&q=80",
-  },
-  {
-    id: "tandoor",
-    name: "Tandoori",
-    imageUrl: "https://images.unsplash.com/photo-1599488615731-7e5c2823ff28?auto=format&fit=crop&w=300&q=80",
-  },
-  {
-    id: "sweets",
-    name: "Mithai",
-    imageUrl: "https://images.unsplash.com/photo-1601050690597-df0568f70950?auto=format&fit=crop&w=300&q=80",
-  },
-  {
-    id: "chaat",
-    name: "Street Food",
-    imageUrl: "https://images.unsplash.com/photo-1546833999-b9f581a1996d?auto=format&fit=crop&w=300&q=80",
-  },
-  {
-    id: "rolls",
-    name: "Kathi Rolls",
-    imageUrl: "https://images.unsplash.com/photo-1626777552726-4a6b54c97e46?auto=format&fit=crop&w=300&q=80",
-  },
+  { label: "Biryani", value: "Biryani", imageUrl: img("photo-1589302168068-964664d93dc0") },
+  { label: "North Indian", value: "North Indian", imageUrl: img("photo-1603894584373-5ac82b2ae398") },
+  { label: "South Indian", value: "South Indian", imageUrl: img("photo-1630383249896-424e482df921") },
+  { label: "Burgers", value: "Burgers", imageUrl: img("photo-1568901346375-23c9450c58cd") },
+  { label: "Tandoori", value: "Tandoor", imageUrl: img("photo-1599487488170-d11ec9c172f0") },
+  { label: "Mithai", value: "Mithai", imageUrl: img("photo-1601050690597-df0568f70950") },
+  { label: "Street food", value: "Street Food", imageUrl: img("photo-1546833999-b9f581a1996d") },
+  { label: "Pizza", value: "Pizza", imageUrl: img("photo-1513104890138-7c749659a591") },
 ];
 
-interface CuisineRailProps {
-  selectedCuisine?: string;
-  onSelectCuisine: (cuisine: string | undefined) => void;
-}
-
-export function CuisineRail({ selectedCuisine, onSelectCuisine }: CuisineRailProps) {
+export function CuisineRail({ selectedCuisine, onSelectCuisine }: { selectedCuisine?: string; onSelectCuisine: (cuisine: string | undefined) => void }) {
+  const selected = POPULAR_CUISINES.find((c) => c.value === selectedCuisine);
   return (
-    <div className="py-6">
-      <h3 className="text-xl font-bold text-text-primary tracking-tight mb-4">
-        Inspiration for your first order
-      </h3>
-      <div className="flex items-center gap-6 overflow-x-auto pb-4 scrollbar-none">
+    <section aria-label="Cuisines">
+      <div className="no-scrollbar -mx-5 flex gap-5 overflow-x-auto px-5 pb-1 sm:mx-0 sm:gap-7 sm:px-0">
         {POPULAR_CUISINES.map((item) => {
-          const isSelected = selectedCuisine?.toLowerCase() === item.name.toLowerCase();
+          const isSelected = selected?.value === item.value;
           return (
             <button
-              key={item.id}
-              onClick={() => onSelectCuisine(isSelected ? undefined : item.name)}
-              className="flex flex-col items-center gap-2 group shrink-0 focus:outline-none"
+              key={item.value}
+              onClick={() => onSelectCuisine(isSelected ? undefined : item.value)}
+              aria-pressed={isSelected}
+              className="group flex w-[72px] shrink-0 flex-col items-center gap-3 sm:w-[88px]"
             >
-              <div
-                className={`relative w-20 h-20 sm:w-24 sm:h-24 rounded-full overflow-hidden border-2 transition-all shadow-sm group-hover:shadow-md group-hover:scale-105 ${
-                  isSelected ? "border-brand ring-4 ring-brand/20 scale-105" : "border-border"
-                }`}
-              >
-                <img
-                  src={item.imageUrl}
-                  alt={item.name}
-                  className="w-full h-full object-cover"
-                />
-              </div>
               <span
-                className={`text-xs font-semibold tracking-tight transition-colors ${
-                  isSelected ? "text-brand font-bold" : "text-text-primary group-hover:text-brand"
+                className={`block h-[72px] w-[72px] overflow-hidden rounded-full ring-offset-2 transition sm:h-[88px] sm:w-[88px] ${
+                  isSelected ? "ring-2 ring-ink" : selected ? "opacity-50 group-hover:opacity-100" : ""
                 }`}
               >
-                {item.name}
+                <SafeImage src={item.imageUrl} alt="" className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />
               </span>
+              <span className={`text-[13px] leading-tight ${isSelected ? "font-semibold text-ink" : "text-ink-soft group-hover:text-ink"}`}>{item.label}</span>
             </button>
           );
         })}
       </div>
-    </div>
+    </section>
   );
+}
+
+export function cuisineLabel(value?: string): string | undefined {
+  return POPULAR_CUISINES.find((c) => c.value === value)?.label ?? value;
 }

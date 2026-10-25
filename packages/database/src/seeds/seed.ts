@@ -98,7 +98,7 @@ const RESTAURANTS: SeedRestaurant[] = [
             description: "Fresh cottage cheese marinated in hung curd, Kashmiri spices, and char-grilled with capsicum and onions.",
             pricePaise: 28000,
             dietaryTag: "VEG",
-            imageUrl: img("photo-1599488615731-7e5c2823ff28"),
+            imageUrl: img("photo-1599487488170-d11ec9c172f0"),
             bestseller: true,
           },
           {
@@ -562,9 +562,9 @@ export async function runSeeds() {
        VALUES
          ($1, 'WELCOME50', 'PERCENTAGE', 50, 10000, 20000, true, '50% off up to ₹100 on your first order', 1, true),
          ($2, 'FLAT100', 'FLAT', 10000, 10000, 40000, true, 'Flat ₹100 off on orders above ₹400', 3, false),
-         ($3, 'ZOMATOSTYLE', 'PERCENTAGE', 20, 5000, 15000, true, '20% off up to ₹50', NULL, false),
+         ($3, 'BITEBOX20', 'PERCENTAGE', 20, 5000, 15000, true, '20% off up to ₹50', NULL, false),
          ($4, 'FREEDEL', 'FREE_DELIVERY', 0, NULL, 19900, true, 'Free delivery on orders above ₹199', 5, false)
-       ON CONFLICT (code) DO NOTHING`,
+       ON CONFLICT (id) DO UPDATE SET code = EXCLUDED.code, description = EXCLUDED.description`,
       [fixedId("d", 1), fixedId("d", 2), fixedId("d", 3), fixedId("d", 4)]
     );
 

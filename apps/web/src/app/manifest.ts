@@ -3,15 +3,15 @@ import type { MetadataRoute } from "next";
 export default function manifest(): MetadataRoute.Manifest {
   return {
     id: "/",
-    name: "ZomatoFresh — Food Delivery",
-    short_name: "ZomatoFresh",
+    name: "BiteBox — Food Delivery",
+    short_name: "BiteBox",
     description: "Order food from restaurants near you with live tracking.",
     start_url: "/?source=pwa",
     scope: "/",
     display: "standalone",
     orientation: "portrait",
     background_color: "#FFFFFF",
-    theme_color: "#D92D47",
+    theme_color: "#FFFFFF",
     categories: ["food", "shopping", "lifestyle"],
     lang: "en-IN",
     icons: [

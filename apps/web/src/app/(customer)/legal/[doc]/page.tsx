@@ -22,7 +22,7 @@ function Body({ doc, e }: { doc: Doc; e: ReturnType<typeof getServerEnv> }) {
     case "terms":
       return (
         <>
-          <p>These terms govern your use of the ZomatoFresh website and app operated by {entity} (“we”). By placing an order you agree to them.</p>
+          <p>These terms govern your use of the BiteBox website and app operated by {entity} (“we”). By placing an order you agree to them.</p>
           <h2>1. Our role</h2>
           <p>We operate a marketplace. Food is prepared and supplied by independent partner restaurants, which are responsible for its quality, hygiene, allergen information and compliance with FSSAI rules. Deliveries are made by independent delivery partners.</p>
           <h2>2. Orders and prices</h2>
@@ -82,16 +82,16 @@ function Body({ doc, e }: { doc: Doc; e: ReturnType<typeof getServerEnv> }) {
       return (
         <>
           <p>In accordance with the Consumer Protection (E-Commerce) Rules, 2020 and the Information Technology Rules, 2021:</p>
-          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
-            <dt className="font-semibold">Grievance Officer</dt>
+          <dl className="my-6 grid grid-cols-[auto_1fr] gap-x-8 gap-y-3">
+            <dt>Grievance Officer</dt>
             <dd>{e.GRIEVANCE_OFFICER_NAME}</dd>
-            <dt className="font-semibold">Email</dt>
+            <dt>Email</dt>
             <dd>
               <a href={`mailto:${e.GRIEVANCE_OFFICER_EMAIL}`}>{e.GRIEVANCE_OFFICER_EMAIL}</a>
             </dd>
-            <dt className="font-semibold">Company</dt>
+            <dt>Company</dt>
             <dd>{entity}</dd>
-            <dt className="font-semibold">Address</dt>
+            <dt>Address</dt>
             <dd>{e.PLATFORM_ADDRESS}</dd>
           </dl>
           <p>We acknowledge complaints within 48 hours and resolve them within one month of receipt. For order issues, the fastest route is “Get help” on the order or <Link href="/support">Help & support</Link>.</p>
@@ -106,18 +106,19 @@ export default async function LegalPage({ params }: { params: Promise<{ doc: str
   const env = getServerEnv();
   const unconfigured = !env.PLATFORM_GSTIN || env.GRIEVANCE_OFFICER_NAME.includes("not configured");
   return (
-    <article className="max-w-3xl mx-auto px-4 sm:px-6 py-8 prose-sm [&_h2]:text-base [&_h2]:font-bold [&_h2]:mt-6 [&_h2]:mb-2 [&_p]:my-2 [&_ul]:list-disc [&_ul]:pl-5 [&_li]:my-1 [&_a]:text-brand [&_a]:underline text-sm text-text-primary">
+    <article className="page-narrow pb-20 pt-10 text-[15px] leading-relaxed text-ink-soft sm:pt-16 [&_a]:font-medium [&_a]:text-ink [&_a]:underline [&_a]:decoration-line-strong [&_a]:underline-offset-4 [&_b]:font-medium [&_b]:text-ink [&_dd]:text-ink [&_dt]:text-ink-muted [&_h2]:mb-3 [&_h2]:mt-12 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:tracking-tight [&_h2]:text-ink [&_li]:my-2 [&_p]:my-4 [&_ul]:list-disc [&_ul]:pl-5">
       {unconfigured && (
-        <p className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs">
-          Template: company details are not configured on this server. Have counsel review this page before launch.
-        </p>
+        <p className="notice notice-warn !mb-10 !mt-0">Template: company details aren&apos;t configured on this server. Have counsel review this page before launch.</p>
       )}
-      <h1 className="text-2xl font-black mb-1">{DOCS[doc as Doc]}</h1>
-      <p className="text-xs text-text-secondary">Applies to orders placed in India.</p>
-      <Body doc={doc as Doc} e={env} />
-      <nav className="mt-10 pt-4 border-t border-border flex flex-wrap gap-4 text-xs">
+      <p className="eyebrow !my-0">Legal</p>
+      <h1 className="h-page mt-3">{DOCS[doc as Doc]}</h1>
+      <p className="!mt-2 text-sm text-ink-muted">Applies to orders placed in India.</p>
+      <div className="mt-10">
+        <Body doc={doc as Doc} e={env} />
+      </div>
+      <nav className="mt-16 flex flex-wrap gap-x-6 gap-y-3 border-t border-line pt-8 text-sm [&_a]:no-underline" aria-label="Legal documents">
         {(Object.keys(DOCS) as Doc[]).map((d) => (
-          <Link key={d} href={`/legal/${d}`} className={d === doc ? "font-bold" : "text-text-secondary"}>
+          <Link key={d} href={`/legal/${d}`} aria-current={d === doc ? "page" : undefined} className={d === doc ? "!text-ink" : "!font-normal !text-ink-muted hover:!text-ink"}>
             {DOCS[d]}
           </Link>
         ))}

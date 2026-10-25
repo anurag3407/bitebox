@@ -83,7 +83,7 @@ export const ServerEnvSchema = z.object({
   DATA_ENCRYPTION_KEY: z.string().min(32).optional(),
 
   // Legal entity shown on GST invoices and legal pages
-  PLATFORM_LEGAL_NAME: z.string().default("ZomatoFresh Technologies Pvt Ltd"),
+  PLATFORM_LEGAL_NAME: z.string().default("BiteBox Technologies Pvt Ltd"),
   PLATFORM_GSTIN: z.string().optional(),
   PLATFORM_ADDRESS: z.string().default("Registered office address not configured"),
   INVOICE_PREFIX: z.string().regex(/^[A-Z]{1,4}$/).default("ZF"),
@@ -151,7 +151,10 @@ export function findInsecureSettings(env: ServerEnv): string[] {
 
 export function getServerEnv(): ServerEnv {
   if (cachedServerEnv) return cachedServerEnv;
-  const parsed = ServerEnvSchema.safeParse(process.env);
+  // `KEY=` in a .env or docker env_file arrives as "", which would fail url()/email()/min()
+  // checks on optional settings; treat blank values as unset so defaults apply
+  const raw = Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined && v.trim() !== ""));
+  const parsed = ServerEnvSchema.safeParse(raw);
   if (!parsed.success) {
     console.error("Invalid server environment configuration:", parsed.error.format());
     throw new Error("Invalid server environment configuration");

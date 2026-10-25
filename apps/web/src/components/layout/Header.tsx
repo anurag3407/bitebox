@@ -2,17 +2,19 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { MapPin, Search, ShoppingCart, User, ChevronDown, Store, Bike, ShieldAlert, LogOut, Receipt, HelpCircle } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
+import { Bike, ChevronDown, HelpCircle, LogOut, MapPin, Receipt, Search, ShieldCheck, ShoppingBag, Store, User } from "lucide-react";
+import { Logo } from "@/components/brand/logo";
+import { LocationSheet } from "@/components/location/location-sheet";
 import { useCartStore } from "@/features/cart/cart-store";
 import { useLocationStore } from "@/features/location/location-store";
 import { useAuth } from "@/features/auth/auth-context";
 import { useMe } from "@/lib/api";
-import { LocationSheet } from "@/components/location/location-sheet";
-import { useQueryClient } from "@tanstack/react-query";
 
 export function Header() {
   const router = useRouter();
+  const pathname = usePathname();
   const itemCount = useCartStore((s) => s.getItemCount());
   const label = useLocationStore((s) => s.label);
   const { isSignedIn, isLoaded, signOut } = useAuth();
@@ -24,95 +26,117 @@ export function Header() {
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    if (!menuOpen) return;
     const close = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
     };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMenuOpen(false);
     document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, []);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen]);
 
   const role = me.data?.role;
   const portals = [
     role === "MERCHANT_STAFF" && { href: "/merchant", label: "Restaurant console", icon: Store },
     role === "RIDER" && { href: "/rider", label: "Delivery partner app", icon: Bike },
-    role === "ADMIN" && { href: "/admin", label: "Operations", icon: ShieldAlert },
+    role === "ADMIN" && { href: "/admin", label: "Operations", icon: ShieldCheck },
   ].filter(Boolean) as Array<{ href: string; label: string; icon: typeof Store }>;
+  const initial = me.data?.name?.trim()?.[0]?.toUpperCase();
+  const onSearchPage = pathname.startsWith("/search");
+
+  const menuItem = "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-ink-soft hover:bg-subtle hover:text-ink";
 
   return (
-    <header className="sticky top-0 z-40 bg-white/95 backdrop-blur border-b border-border pt-[env(safe-area-inset-top)]">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-4 min-w-0">
-          <Link href="/" className="flex items-center gap-2 shrink-0" aria-label="ZomatoFresh home">
-            <img src="/icons/icon-192.png" alt="" className="w-9 h-9 rounded-xl" />
-            <span className="hidden sm:block text-xl font-black tracking-tight text-text-primary">
-              Zomato<span className="text-brand">Fresh</span>
-            </span>
+    <header className="sticky top-0 z-40 border-b border-line/70 bg-white/90 pt-[env(safe-area-inset-top)] backdrop-blur-xl">
+      <div className="page flex h-16 items-center gap-4 sm:h-[72px] sm:gap-6">
+        <Link href="/" aria-label="BiteBox home" className="shrink-0">
+          <Logo className="hidden sm:inline-flex" />
+          <Logo compact className="sm:hidden" />
+        </Link>
+
+        <button
+          onClick={() => setLocationOpen(true)}
+          className="group flex min-w-0 items-center gap-2 rounded-full py-2 text-left"
+          aria-label="Change delivery location"
+        >
+          <MapPin className="h-4 w-4 shrink-0 text-ink" />
+          <span className="min-w-0">
+            <span className="block truncate text-sm font-medium text-ink sm:max-w-[240px]">{label ?? "Set delivery location"}</span>
+          </span>
+          <ChevronDown className="h-4 w-4 shrink-0 text-ink-muted transition-transform group-hover:translate-y-0.5" />
+        </button>
+
+        <div className="flex-1" />
+
+        {!onSearchPage && (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (searchQuery.trim()) router.push(`/search?q=${encodeURIComponent(searchQuery.trim())}`);
+            }}
+            className="relative hidden w-full max-w-xs items-center lg:flex"
+            role="search"
+          >
+            <Search className="pointer-events-none absolute left-4 h-4 w-4 text-ink-muted" />
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search dishes or restaurants"
+              aria-label="Search"
+              className="h-10 w-full rounded-full bg-subtle pl-10 pr-4 text-sm text-ink outline-none transition placeholder:text-ink-muted focus:bg-white focus:ring-1 focus:ring-line-strong"
+            />
+          </form>
+        )}
+
+        <nav className="flex shrink-0 items-center gap-1 sm:gap-2" aria-label="Account">
+          <Link href="/search" aria-label="Search" className="btn btn-ghost btn-icon hidden sm:inline-flex lg:hidden">
+            <Search className="h-5 w-5" />
           </Link>
 
-          <button
-            onClick={() => setLocationOpen(true)}
-            className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg hover:bg-surface-muted text-left text-xs min-w-0"
-            aria-label="Change delivery location"
-          >
-            <MapPin className="w-4 h-4 text-brand shrink-0" />
-            <span className="font-semibold text-text-primary truncate max-w-[140px] sm:max-w-[220px]">
-              {label ?? "Set delivery location"}
-            </span>
-            <ChevronDown className="w-3.5 h-3.5 text-text-secondary shrink-0" />
-          </button>
-        </div>
-
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (searchQuery.trim()) router.push(`/search?q=${encodeURIComponent(searchQuery.trim())}`);
-          }}
-          className="flex-1 max-w-md hidden md:flex items-center relative"
-          role="search"
-        >
-          <Search className="w-4 h-4 text-text-secondary absolute left-3.5 pointer-events-none" />
-          <input
-            type="search"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search for restaurant, cuisine or a dish"
-            aria-label="Search"
-            className="w-full pl-10 pr-4 py-2 bg-surface-muted border border-border rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-brand/20 focus:border-brand"
-          />
-        </form>
-
-        <div className="flex items-center gap-2 shrink-0">
           {isLoaded && !isSignedIn ? (
-            <Link href="/sign-in" className="px-3 py-2 text-xs font-bold text-text-primary hover:text-brand">
+            <Link href="/sign-in" className="btn btn-ghost btn-sm">
               Sign in
             </Link>
           ) : (
             <div className="relative" ref={menuRef}>
               <button
                 onClick={() => setMenuOpen((o) => !o)}
-                className="flex items-center gap-1.5 p-2 rounded-full hover:bg-surface-muted"
+                className="flex h-10 w-10 items-center justify-center rounded-full bg-subtle text-sm font-semibold text-ink transition-colors hover:bg-line"
                 aria-haspopup="menu"
                 aria-expanded={menuOpen}
+                aria-label="Account menu"
               >
-                <User className="w-5 h-5" />
-                <span className="hidden lg:inline text-xs font-semibold max-w-[100px] truncate">{me.data?.name?.split(" ")[0]}</span>
+                {initial ?? <User className="h-4 w-4" />}
               </button>
               {menuOpen && (
-                <div role="menu" className="absolute right-0 mt-2 w-60 bg-white rounded-2xl shadow-xl border border-border p-2 z-50">
-                  <Link role="menuitem" href="/account" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm hover:bg-surface-muted">
-                    <User className="w-4 h-4" /> Profile & addresses
+                <div role="menu" className="absolute right-0 mt-3 w-64 animate-sheet-up rounded-3xl border border-line bg-white p-2 shadow-pop">
+                  {me.data && (
+                    <div className="px-3 pb-3 pt-2">
+                      <p className="truncate text-sm font-semibold text-ink">{me.data.name}</p>
+                      {me.data.email && <p className="truncate text-xs text-ink-muted">{me.data.email}</p>}
+                    </div>
+                  )}
+                  <Link role="menuitem" href="/account?tab=orders" onClick={() => setMenuOpen(false)} className={menuItem}>
+                    <Receipt className="h-4 w-4" /> Orders
                   </Link>
-                  <Link role="menuitem" href="/account?tab=orders" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm hover:bg-surface-muted">
-                    <Receipt className="w-4 h-4" /> Your orders
+                  <Link role="menuitem" href="/account?tab=profile" onClick={() => setMenuOpen(false)} className={menuItem}>
+                    <User className="h-4 w-4" /> Account
                   </Link>
-                  <Link role="menuitem" href="/support" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm hover:bg-surface-muted">
-                    <HelpCircle className="w-4 h-4" /> Help & support
+                  <Link role="menuitem" href="/support" onClick={() => setMenuOpen(false)} className={menuItem}>
+                    <HelpCircle className="h-4 w-4" /> Help
                   </Link>
+                  {portals.length > 0 && <div className="my-2 border-t border-line" />}
                   {portals.map((p) => (
-                    <Link role="menuitem" key={p.href} href={p.href} onClick={() => setMenuOpen(false)} className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm hover:bg-surface-muted font-semibold text-brand">
-                      <p.icon className="w-4 h-4" /> {p.label}
+                    <Link role="menuitem" key={p.href} href={p.href} onClick={() => setMenuOpen(false)} className={`${menuItem} font-medium text-ink`}>
+                      <p.icon className="h-4 w-4" /> {p.label}
                     </Link>
                   ))}
+                  <div className="my-2 border-t border-line" />
                   <button
                     role="menuitem"
                     onClick={async () => {
@@ -121,9 +145,9 @@ export function Header() {
                       queryClient.clear();
                       router.push("/");
                     }}
-                    className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm hover:bg-surface-muted text-text-secondary"
+                    className={`${menuItem} w-full`}
                   >
-                    <LogOut className="w-4 h-4" /> Sign out
+                    <LogOut className="h-4 w-4" /> Sign out
                   </button>
                 </div>
               )}
@@ -132,13 +156,13 @@ export function Header() {
 
           <Link
             href="/checkout"
-            className="relative hidden sm:flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-brand hover:bg-brand-hover text-white text-xs font-bold shadow-md"
+            className={`btn btn-sm hidden sm:inline-flex ${itemCount > 0 ? "btn-primary" : "btn-secondary"}`}
+            aria-label={itemCount > 0 ? `Cart, ${itemCount} items` : "Cart"}
           >
-            <ShoppingCart className="w-4 h-4" />
-            <span>Cart</span>
-            {itemCount > 0 && <span className="ml-1 px-1.5 bg-white text-brand rounded-full text-[11px] font-black">{itemCount}</span>}
+            <ShoppingBag className="h-4 w-4" />
+            <span className="tabular">{itemCount > 0 ? itemCount : "Cart"}</span>
           </Link>
-        </div>
+        </nav>
       </div>
       <LocationSheet open={locationOpen} onClose={() => setLocationOpen(false)} />
     </header>

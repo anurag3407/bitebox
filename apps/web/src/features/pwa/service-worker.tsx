@@ -15,6 +15,7 @@ export function ServiceWorkerManager() {
     if (process.env.NODE_ENV !== "production" && process.env.NEXT_PUBLIC_ENABLE_SW !== "true") return;
 
     let reloading = false;
+    let updateTimer: ReturnType<typeof setInterval> | undefined;
     const onControllerChange = () => {
       if (reloading) return;
       reloading = true;
@@ -33,23 +34,22 @@ export function ServiceWorkerManager() {
           });
         });
         // Long-lived tabs (riders, kitchens) still pick up deploys
-        const timer = setInterval(() => registration.update().catch(() => undefined), 30 * 60 * 1000);
-        return () => clearInterval(timer);
+        updateTimer = setInterval(() => registration.update().catch(() => undefined), 30 * 60 * 1000);
       })
       .catch(() => undefined);
 
-    return () => navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
+    return () => {
+      clearInterval(updateTimer);
+      navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
+    };
   }, []);
 
   if (!waiting) return null;
   return (
-    <div role="status" className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[60] bg-text-primary text-white text-xs font-semibold px-4 py-3 rounded-2xl shadow-2xl flex items-center gap-3">
-      <span>A new version is available</span>
-      <button
-        onClick={() => waiting.postMessage("SKIP_WAITING")}
-        className="flex items-center gap-1 bg-white text-text-primary px-3 py-1.5 rounded-xl font-bold"
-      >
-        <RefreshCw className="w-3.5 h-3.5" /> Refresh
+    <div role="status" className="fixed left-1/2 top-[calc(1rem+env(safe-area-inset-top))] z-[60] flex -translate-x-1/2 animate-toast-in items-center gap-4 rounded-full bg-ink py-2 pl-5 pr-2 text-sm text-white shadow-pop">
+      <span>A new version is ready</span>
+      <button onClick={() => waiting.postMessage("SKIP_WAITING")} className="btn btn-sm gap-1.5 bg-white text-ink hover:bg-white/90">
+        <RefreshCw className="h-3.5 w-3.5" /> Refresh
       </button>
     </div>
   );

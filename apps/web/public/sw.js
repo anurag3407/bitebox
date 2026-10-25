@@ -1,4 +1,4 @@
-/* ZomatoFresh service worker.
+/* BiteBox service worker.
  *
  * Caching rules (deliberately conservative for a payments app):
  *  - /_next/static/*            cache-first (content-hashed, immutable)
@@ -118,9 +118,9 @@ self.addEventListener("push", (event) => {
   try {
     payload = event.data ? event.data.json() : {};
   } catch {
-    payload = { title: "ZomatoFresh", body: event.data ? event.data.text() : "" };
+    payload = { title: "BiteBox", body: event.data ? event.data.text() : "" };
   }
-  const title = payload.title || "ZomatoFresh";
+  const title = payload.title || "BiteBox";
   event.waitUntil(
     self.registration.showNotification(title, {
       body: payload.body || "",

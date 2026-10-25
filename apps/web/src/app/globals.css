@@ -2,30 +2,206 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --background: #FFFFFF;
-  --foreground: #1F2026;
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    @apply bg-white font-sans text-ink antialiased;
+    font-feature-settings: "cv11", "ss01";
+    text-rendering: optimizeLegibility;
+  }
+  ::selection {
+    @apply bg-ink text-white;
+  }
+  :focus-visible {
+    @apply outline-none ring-2 ring-ink/25 ring-offset-2 ring-offset-white;
+  }
+  input[type="search"]::-webkit-search-cancel-button {
+    -webkit-appearance: none;
+  }
 }
 
-body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  -webkit-font-smoothing: antialiased;
+@layer components {
+  /* Layout */
+  .page {
+    @apply mx-auto w-full max-w-6xl px-5 sm:px-8;
+  }
+  .page-narrow {
+    @apply mx-auto w-full max-w-2xl px-5 sm:px-8;
+  }
+
+  /* Type */
+  .h-display {
+    @apply text-[2.25rem] font-semibold leading-[1.05] tracking-tight text-ink sm:text-6xl;
+  }
+  .h-page {
+    @apply text-2xl font-semibold tracking-tight text-ink sm:text-[2rem] sm:leading-tight;
+  }
+  .h-section {
+    @apply text-lg font-semibold tracking-tight text-ink sm:text-xl;
+  }
+  .eyebrow {
+    @apply text-xs font-medium uppercase tracking-[0.08em] text-ink-muted;
+  }
+  .link {
+    @apply font-medium text-ink underline decoration-line-strong underline-offset-4 transition-colors hover:decoration-ink;
+  }
+
+  /* Buttons */
+  .btn {
+    @apply inline-flex h-11 shrink-0 select-none items-center justify-center gap-2 whitespace-nowrap rounded-full px-5 text-sm font-medium transition-colors duration-150 disabled:pointer-events-none disabled:opacity-40;
+  }
+  .btn-sm {
+    @apply h-9 px-4 text-[13px];
+  }
+  .btn-lg {
+    @apply h-14 px-7 text-[15px];
+  }
+  .btn-icon {
+    @apply h-10 w-10 px-0;
+  }
+  .btn-block {
+    @apply w-full;
+  }
+  .btn-primary {
+    @apply bg-ink text-white hover:bg-ink/85;
+  }
+  .btn-secondary {
+    @apply bg-subtle text-ink hover:bg-line;
+  }
+  .btn-outline {
+    @apply border border-line bg-white text-ink hover:border-ink/40;
+  }
+  .btn-ghost {
+    @apply text-ink-soft hover:bg-subtle hover:text-ink;
+  }
+  .btn-success {
+    @apply bg-success text-white hover:bg-success/90;
+  }
+  .btn-danger {
+    @apply bg-danger text-white hover:bg-danger/90;
+  }
+  .btn-danger-ghost {
+    @apply text-danger hover:bg-danger-soft;
+  }
+
+  /* Forms */
+  .label {
+    @apply mb-2 block text-[13px] font-medium text-ink-soft;
+  }
+  .hint {
+    @apply mt-1.5 block text-xs font-normal text-ink-muted;
+  }
+  .input {
+    @apply block h-12 w-full rounded-2xl border border-line bg-white px-4 text-[15px] text-ink transition placeholder:text-ink-muted focus:border-ink focus:outline-none focus:ring-4 focus:ring-ink/5 disabled:bg-subtle disabled:text-ink-muted;
+  }
+  textarea.input {
+    @apply h-auto py-3 leading-relaxed;
+  }
+  select.input {
+    @apply cursor-pointer appearance-none bg-no-repeat pr-10;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%238A8A8A' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E");
+    background-position: right 1rem center;
+  }
+  .input-sm {
+    @apply h-10 rounded-xl px-3 text-sm;
+  }
+  .checkbox {
+    @apply h-5 w-5 shrink-0 cursor-pointer rounded-md border-line-strong accent-ink;
+  }
+
+  /* Chips & tabs */
+  .chip {
+    @apply inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-line bg-white px-4 text-[13px] font-medium text-ink-soft transition-colors hover:border-ink/40 hover:text-ink;
+  }
+  .chip[aria-pressed="true"],
+  .chip[aria-checked="true"],
+  .chip-active {
+    @apply border-ink bg-ink text-white hover:text-white;
+  }
+  .tabs {
+    @apply no-scrollbar -mx-5 flex gap-7 overflow-x-auto border-b border-line px-5 sm:mx-0 sm:px-0;
+  }
+  .tab {
+    @apply -mb-px shrink-0 whitespace-nowrap border-b-2 border-transparent pb-3.5 text-sm font-medium text-ink-muted transition-colors hover:text-ink;
+  }
+  .tab[aria-selected="true"] {
+    @apply border-ink text-ink;
+  }
+
+  /* Surfaces */
+  .card {
+    @apply rounded-3xl border border-line bg-white;
+  }
+  .panel {
+    @apply rounded-3xl bg-subtle;
+  }
+  .skeleton {
+    @apply animate-pulse rounded-3xl bg-subtle;
+  }
+  .rows > * + * {
+    @apply border-t border-line;
+  }
+
+  /* Status */
+  .badge {
+    @apply inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-medium leading-none;
+  }
+  .badge-neutral {
+    @apply bg-subtle text-ink-soft;
+  }
+  .badge-success {
+    @apply bg-success-soft text-success;
+  }
+  .badge-danger {
+    @apply bg-danger-soft text-danger;
+  }
+  .badge-warn {
+    @apply bg-warn-soft text-warn;
+  }
+  .badge-accent {
+    @apply bg-accent-soft text-accent;
+  }
+  .badge-ink {
+    @apply bg-ink text-white;
+  }
+  .notice {
+    @apply flex gap-3 rounded-2xl px-4 py-3.5 text-sm leading-relaxed;
+  }
+  .notice-neutral {
+    @apply bg-subtle text-ink-soft;
+  }
+  .notice-warn {
+    @apply bg-warn-soft text-warn;
+  }
+  .notice-danger {
+    @apply bg-danger-soft text-danger;
+  }
+  .notice-success {
+    @apply bg-success-soft text-success;
+  }
+
+  /* Quantity stepper */
+  .stepper {
+    @apply inline-flex h-9 items-center rounded-full border border-line bg-white text-sm font-semibold text-ink;
+  }
+  .stepper > button {
+    @apply flex h-full w-9 items-center justify-center rounded-full text-ink-soft transition-colors hover:bg-subtle hover:text-ink disabled:opacity-30;
+  }
 }
 
-/* Custom scrollbar */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-::-webkit-scrollbar-track {
-  background: #f1f1f1;
-}
-::-webkit-scrollbar-thumb {
-  background: #ccc;
-  border-radius: 4px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #aaa;
+@layer utilities {
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
 }

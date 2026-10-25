@@ -1,9 +1,11 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
-import { MAX_LINE_QUANTITY } from "@/features/cart/cart-store";
-import { X, Check } from "lucide-react";
+import React, { useState } from "react";
+import { Check, Minus, Plus } from "lucide-react";
 import { MenuItemDto, ModifierGroupDto, ModifierOptionDto } from "@startup/contracts";
+import { MAX_LINE_QUANTITY } from "@/features/cart/cart-store";
+import { Modal } from "@/components/ui/modal";
+import { formatRupees } from "@/lib/format";
 
 interface ItemCustomizerModalProps {
   item: MenuItemDto;
@@ -19,16 +21,46 @@ interface ItemCustomizerModalProps {
   }) => void;
 }
 
-export function ItemCustomizerModal({
-  item,
-  isOpen,
-  onClose,
-  onConfirm,
-}: ItemCustomizerModalProps) {
-  // Default to the first portion that can actually be ordered
-  const [selectedVariantId, setSelectedVariantId] = useState<string | undefined>(
-    item.variants.find((v) => v.isAvailable)?.id
+function OptionRow({
+  type,
+  checked,
+  disabled,
+  onSelect,
+  title,
+  price,
+}: {
+  type: "radio" | "checkbox";
+  checked: boolean;
+  disabled?: boolean;
+  onSelect: () => void;
+  title: string;
+  price: string;
+}) {
+  return (
+    <button
+      type="button"
+      role={type}
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={onSelect}
+      className="flex w-full items-center gap-4 py-3.5 text-left disabled:opacity-40"
+    >
+      <span
+        className={`flex h-5 w-5 shrink-0 items-center justify-center border transition-colors ${type === "radio" ? "rounded-full" : "rounded-md"} ${
+          checked ? "border-ink bg-ink text-white" : "border-line-strong"
+        }`}
+      >
+        {checked && (type === "radio" ? <span className="h-2 w-2 rounded-full bg-white" /> : <Check className="h-3.5 w-3.5" strokeWidth={3} />)}
+      </span>
+      <span className="flex-1 text-[15px] text-ink">{title}</span>
+      <span className="text-sm text-ink-muted tabular">{price}</span>
+    </button>
   );
+}
+
+export function ItemCustomizerModal({ item, isOpen, onClose, onConfirm }: ItemCustomizerModalProps) {
+  // Default to the first portion that can actually be ordered
+  const [selectedVariantId, setSelectedVariantId] = useState<string | undefined>(item.variants.find((v) => v.isAvailable)?.id);
 
   // Selected options map: groupId -> Set of option IDs
   const [selectedOptionsMap, setSelectedOptionsMap] = useState<Record<string, Set<string>>>(() => {
@@ -37,88 +69,52 @@ export function ItemCustomizerModal({
       initial[group.id] = new Set<string>();
       // Pre-select the first available option of single-choice required groups
       const firstAvailable = group.options.find((o) => o.isAvailable);
-      if (group.isRequired && group.maxSelect === 1 && firstAvailable) {
-        initial[group.id]!.add(firstAvailable.id);
-      }
+      if (group.isRequired && group.maxSelect === 1 && firstAvailable) initial[group.id]!.add(firstAvailable.id);
     }
     return initial;
   });
-
   const [quantity, setQuantity] = useState(1);
   const [instructions, setInstructions] = useState("");
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [isOpen, onClose]);
-
-  if (!isOpen) return null;
 
   const currentVariant = item.variants.find((v) => v.id === selectedVariantId);
   const basePricePaise = currentVariant ? currentVariant.pricePaise : item.pricePaise;
 
-  // Calculate selected options price
   let optionsPricePaise = 0;
   const allSelectedOptions: ModifierOptionDto[] = [];
-
   for (const group of item.modifierGroups) {
     const set = selectedOptionsMap[group.id];
-    if (set) {
-      for (const opt of group.options) {
-        if (set.has(opt.id)) {
-          optionsPricePaise += opt.pricePaise;
-          allSelectedOptions.push(opt);
-        }
+    for (const opt of group.options) {
+      if (set?.has(opt.id)) {
+        optionsPricePaise += opt.pricePaise;
+        allSelectedOptions.push(opt);
       }
     }
   }
+  const grandTotalPaise = (basePricePaise + optionsPricePaise) * quantity;
 
-  const unitTotalPaise = basePricePaise + optionsPricePaise;
-  const grandTotalPaise = unitTotalPaise * quantity;
-
-  // Check required group constraints
-  let canConfirm = true;
+  // Same rules as the server: required groups need their minimum, optional groups
+  // enforce their minimum once started
   let validationMessage = "";
-
-  if (item.variants.length > 0 && !currentVariant) {
-    canConfirm = false;
-    validationMessage = "Choose a portion size";
-  }
+  if (item.variants.length > 0 && !currentVariant) validationMessage = "Choose a portion size";
   for (const group of item.modifierGroups) {
+    if (validationMessage) break;
     const count = selectedOptionsMap[group.id]?.size || 0;
     const min = group.isRequired ? Math.max(1, group.minSelect) : group.minSelect;
-    // Same rule as the server: optional groups enforce their minimum once started
-    if ((group.isRequired || count > 0) && count < min) {
-      canConfirm = false;
-      validationMessage = `Select at least ${min} in "${group.name}"`;
-      break;
-    }
+    if ((group.isRequired || count > 0) && count < min) validationMessage = `Choose ${min} in “${group.name}”`;
   }
+  const canConfirm = !validationMessage;
 
   const toggleOption = (group: ModifierGroupDto, option: ModifierOptionDto) => {
     const currentSet = new Set(selectedOptionsMap[group.id] || []);
-
     if (group.maxSelect === 1) {
-      // Single select (radio style)
       currentSet.clear();
       currentSet.add(option.id);
-    } else {
-      // Multi-select (checkbox style)
-      if (currentSet.has(option.id)) {
-        currentSet.delete(option.id);
-      } else {
-        if (currentSet.size < group.maxSelect) {
-          currentSet.add(option.id);
-        }
-      }
+    } else if (currentSet.has(option.id)) {
+      currentSet.delete(option.id);
+    } else if (currentSet.size < group.maxSelect) {
+      currentSet.add(option.id);
     }
-
-    setSelectedOptionsMap({
-      ...selectedOptionsMap,
-      [group.id]: currentSet,
-    });
+    setSelectedOptionsMap({ ...selectedOptionsMap, [group.id]: currentSet });
   };
 
   const handleAdd = () => {
@@ -134,180 +130,96 @@ export function ItemCustomizerModal({
     onClose();
   };
 
+  const groupHeader = (title: string, sub: string, required: boolean) => (
+    <div className="flex items-baseline justify-between gap-3 pb-1">
+      <div>
+        <h3 className="text-[15px] font-semibold text-ink">{title}</h3>
+        <p className="text-xs text-ink-muted">{sub}</p>
+      </div>
+      {required && <span className="badge badge-neutral">Required</span>}
+    </div>
+  );
+
   return (
-    <div
-      className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center sm:p-4 bg-black/60"
-      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
-    >
-      <div role="dialog" aria-modal="true" aria-label={`Customise ${item.name}`} className="relative w-full max-w-lg bg-white rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden max-h-[90vh] flex flex-col pb-[env(safe-area-inset-bottom)]">
-        {/* Header */}
-        <div className="p-5 border-b border-border flex items-center justify-between">
-          <div>
-            <h3 className="text-lg font-bold text-text-primary tracking-tight">
-              Customize &quot;{item.name}&quot;
-            </h3>
-            <p className="text-xs text-text-secondary mt-0.5">
-              Select portion size and your favorite add-ons
-            </p>
+    <Modal
+      open={isOpen}
+      onClose={onClose}
+      title={item.name}
+      description={item.description ?? undefined}
+      footer={
+        <div className="flex items-center gap-3">
+          <div className="stepper h-14 px-1">
+            <button type="button" aria-label="Decrease quantity" disabled={quantity <= 1} onClick={() => setQuantity(Math.max(1, quantity - 1))} className="!w-11">
+              <Minus className="h-4 w-4" />
+            </button>
+            <span className="w-6 text-center tabular" aria-live="polite">
+              {quantity}
+            </span>
+            <button type="button" aria-label="Increase quantity" disabled={quantity >= MAX_LINE_QUANTITY} onClick={() => setQuantity(Math.min(MAX_LINE_QUANTITY, quantity + 1))} className="!w-11">
+              <Plus className="h-4 w-4" />
+            </button>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-full hover:bg-surface-muted text-text-secondary transition-colors"
-          >
-            <X className="w-5 h-5" />
+          <button onClick={handleAdd} disabled={!canConfirm} className="btn btn-primary btn-lg flex-1 justify-between !opacity-100 disabled:bg-subtle disabled:text-ink-muted">
+            <span>{canConfirm ? "Add to cart" : validationMessage}</span>
+            {canConfirm && <span className="tabular">{formatRupees(grandTotalPaise)}</span>}
           </button>
         </div>
+      }
+    >
+      <div className="space-y-8 pb-2">
+        {item.variants.length > 0 && (
+          <section>
+            {groupHeader("Portion", "Choose one", true)}
+            <div className="rows">
+              {item.variants.map((v) => (
+                <OptionRow
+                  key={v.id}
+                  type="radio"
+                  checked={selectedVariantId === v.id}
+                  disabled={!v.isAvailable}
+                  onSelect={() => setSelectedVariantId(v.id)}
+                  title={`${v.name}${v.isAvailable ? "" : " · sold out"}`}
+                  price={formatRupees(v.pricePaise)}
+                />
+              ))}
+            </div>
+          </section>
+        )}
 
-        {/* Scrollable Options List */}
-        <div className="p-5 overflow-y-auto flex-1 space-y-6">
-          {/* 1. Portion / Variant Selection */}
-          {item.variants.length > 0 && (
-            <div>
-              <div className="flex items-center justify-between mb-2.5">
-                <h4 className="text-sm font-bold text-text-primary">Portion Size</h4>
-                <span className="text-[11px] font-bold text-brand uppercase tracking-wider">
-                  Required
-                </span>
-              </div>
-              <div className="space-y-2">
-                {item.variants.map((v) => (
-                  <label
-                    key={v.id}
-                    className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-all ${
-                      selectedVariantId === v.id
-                        ? "border-brand bg-brand-light/40"
-                        : "border-border hover:bg-surface-muted"
-                    } ${!v.isAvailable ? "opacity-50 pointer-events-none" : ""}`}
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <input
-                        type="radio"
-                        name="variant"
-                        checked={selectedVariantId === v.id}
-                        onChange={() => setSelectedVariantId(v.id)}
-                        className="text-brand focus:ring-brand"
-                      />
-                      <span className="text-xs font-semibold text-text-primary">
-                        {v.name}
-                        {!v.isAvailable && " (sold out)"}
-                      </span>
-                    </div>
-                    <span className="text-xs font-bold text-text-primary">
-                      ₹{v.pricePaise / 100}
-                    </span>
-                  </label>
+        {item.modifierGroups.map((group) => {
+          const currentSelected = selectedOptionsMap[group.id] || new Set();
+          return (
+            <section key={group.id}>
+              {groupHeader(group.name, group.maxSelect === 1 ? "Choose one" : `Choose up to ${group.maxSelect}`, group.isRequired)}
+              <div className="rows">
+                {group.options.map((option) => (
+                  <OptionRow
+                    key={option.id}
+                    type={group.maxSelect === 1 ? "radio" : "checkbox"}
+                    checked={currentSelected.has(option.id)}
+                    disabled={!option.isAvailable}
+                    onSelect={() => toggleOption(group, option)}
+                    title={option.name}
+                    price={option.pricePaise === 0 ? "Free" : `+${formatRupees(option.pricePaise)}`}
+                  />
                 ))}
               </div>
-            </div>
-          )}
+            </section>
+          );
+        })}
 
-          {/* 2. Modifier Groups */}
-          {item.modifierGroups.map((group) => {
-            const currentSelected = selectedOptionsMap[group.id] || new Set();
-
-            return (
-              <div key={group.id} className="pt-2">
-                <div className="flex items-center justify-between mb-2">
-                  <div>
-                    <h4 className="text-sm font-bold text-text-primary">{group.name}</h4>
-                    <p className="text-[11px] text-text-secondary">
-                      {group.maxSelect === 1
-                        ? "Select 1 option"
-                        : `Select up to ${group.maxSelect} options`}
-                    </p>
-                  </div>
-                  {group.isRequired && (
-                    <span className="text-[10px] font-bold text-brand uppercase bg-brand-light px-2 py-0.5 rounded-full">
-                      Required
-                    </span>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  {group.options.map((option) => {
-                    const isChecked = currentSelected.has(option.id);
-                    return (
-                      <label
-                        key={option.id}
-                        className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-all ${
-                          isChecked
-                            ? "border-brand bg-brand-light/30"
-                            : "border-border hover:bg-surface-muted"
-                        } ${!option.isAvailable ? "opacity-50 pointer-events-none" : ""}`}
-                      >
-                        <div className="flex items-center gap-2.5">
-                          <input
-                            type={group.maxSelect === 1 ? "radio" : "checkbox"}
-                            name={group.id}
-                            checked={isChecked}
-                            onChange={() => toggleOption(group, option)}
-                            className="text-brand focus:ring-brand rounded-sm"
-                          />
-                          <span className="text-xs font-medium text-text-primary">
-                            {option.name}
-                          </span>
-                        </div>
-                        <span className="text-xs font-semibold text-text-secondary">
-                          {option.pricePaise === 0 ? "Free" : `+₹${option.pricePaise / 100}`}
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })}
-
-          {/* 3. Cooking Instructions */}
-          <div>
-            <h4 className="text-sm font-bold text-text-primary mb-1.5">
-              Special Instructions
-            </h4>
-            <input
-              type="text"
-              value={instructions}
-              onChange={(e) => setInstructions(e.target.value)}
-              placeholder="e.g. Less spicy, extra onions, no cutlery..."
-              maxLength={150}
-              className="w-full p-3 bg-surface-muted border border-border rounded-xl text-xs text-text-primary focus:outline-none focus:ring-2 focus:ring-brand/20 focus:border-brand"
-            />
-          </div>
-        </div>
-
-        {/* Footer with Total and Add button */}
-        <div className="p-4 border-t border-border bg-surface-muted/50 flex items-center justify-between gap-4">
-          {/* Quantity Stepper */}
-          <div className="flex items-center border border-border bg-white rounded-xl shadow-xs">
-            <button
-              onClick={() => setQuantity(Math.max(1, quantity - 1))}
-              className="px-3 py-2 text-text-secondary hover:text-brand font-bold text-sm"
-            >
-              −
-            </button>
-            <span className="px-2 text-xs font-black text-text-primary">{quantity}</span>
-            <button
-              onClick={() => setQuantity(Math.min(MAX_LINE_QUANTITY, quantity + 1))}
-              className="px-3 py-2 text-text-secondary hover:text-brand font-bold text-sm"
-            >
-              +
-            </button>
-          </div>
-
-          {/* Confirm Button */}
-          <button
-            onClick={handleAdd}
-            disabled={!canConfirm}
-            className={`flex-1 py-3 px-5 rounded-xl font-bold text-xs flex items-center justify-between shadow-md transition-all ${
-              canConfirm
-                ? "bg-brand hover:bg-brand-hover text-white cursor-pointer"
-                : "bg-gray-300 text-gray-500 cursor-not-allowed"
-            }`}
-          >
-            <span>{canConfirm ? "Add to Cart" : validationMessage}</span>
-            <span className="font-black text-sm">₹{grandTotalPaise / 100}</span>
-          </button>
-        </div>
+        <label className="block">
+          <span className="label">Cooking instructions</span>
+          <input
+            type="text"
+            value={instructions}
+            onChange={(e) => setInstructions(e.target.value)}
+            placeholder="Less spicy, no onions…"
+            maxLength={150}
+            className="input"
+          />
+        </label>
       </div>
-    </div>
+    </Modal>
   );
 }

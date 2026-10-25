@@ -3,14 +3,18 @@
 import React, { useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { MessageCircle } from "lucide-react";
+import { ChevronRight, MessageCircle, Plus } from "lucide-react";
 import { HelpSheet } from "@/components/support/help-sheet";
-import { EmptyState } from "@/components/ui/misc";
+import { EmptyState, PageSpinner } from "@/components/ui/misc";
 import { useAuth } from "@/features/auth/auth-context";
 import { useApi } from "@/lib/api";
 import { timeAgo } from "@/lib/format";
 
-const STATUS_LABEL = { OPEN: "Waiting for support", AWAITING_CUSTOMER: "Support replied", RESOLVED: "Resolved" } as const;
+const STATUS = {
+  OPEN: { label: "Waiting for support", badge: "badge-neutral" },
+  AWAITING_CUSTOMER: { label: "New reply", badge: "badge-accent" },
+  RESOLVED: { label: "Resolved", badge: "badge-success" },
+} as const;
 
 export default function SupportListPage() {
   const api = useApi();
@@ -18,43 +22,58 @@ export default function SupportListPage() {
   const [open, setOpen] = useState(false);
   const tickets = useQuery({ queryKey: ["tickets"], queryFn: () => api.getMyTickets(), enabled: isSignedIn });
 
-  if (isLoaded && !isSignedIn) {
+  if (!isLoaded) return <PageSpinner />;
+  if (!isSignedIn) {
     return (
-      <div className="max-w-md mx-auto my-16 px-4">
-        <EmptyState title="Sign in to contact support" action={<Link href="/sign-in?redirect_url=/support" className="inline-block px-5 py-2.5 bg-brand text-white text-xs font-bold rounded-xl">Sign in</Link>} />
-      </div>
+      <EmptyState
+        icon={<MessageCircle />}
+        title="Sign in to contact support"
+        action={
+          <Link href="/sign-in?redirect_url=/support" className="btn btn-primary">
+            Sign in
+          </Link>
+        }
+      />
     );
   }
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-6 space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-black">Help & support</h1>
-        <button onClick={() => setOpen(true)} className="px-4 py-2 rounded-xl bg-brand text-white text-sm font-bold">
-          New request
+    <div className="page-narrow pb-16 pt-10 sm:pt-16">
+      <div className="flex items-end justify-between gap-4">
+        <div>
+          <h1 className="h-page">Help</h1>
+          <p className="mt-2 text-[15px] text-ink-muted">For a problem with an order, open the order and tap “Get help”.</p>
+        </div>
+        <button onClick={() => setOpen(true)} className="btn btn-primary shrink-0">
+          <Plus className="h-4 w-4" /> New
         </button>
       </div>
-      <p className="text-sm text-text-secondary">For a problem with an order, open the order and tap “Get help” so we can see the details.</p>
-      {tickets.data?.length === 0 && <EmptyState title="No conversations yet" />}
-      <ul className="space-y-2">
-        {tickets.data?.map((t) => (
-          <li key={t.id}>
-            <Link href={`/support/${t.id}`} className="flex gap-3 p-4 rounded-2xl border border-border hover:shadow-md">
-              <MessageCircle className="w-5 h-5 text-brand shrink-0 mt-0.5" />
-              <div className="flex-1 min-w-0">
-                <div className="flex justify-between gap-2">
-                  <p className="text-sm font-bold">{t.orderNumber ? `Order #${t.orderNumber}` : "General question"}</p>
-                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${t.status === "AWAITING_CUSTOMER" ? "bg-brand-light text-brand" : t.status === "RESOLVED" ? "bg-success-light text-success" : "bg-surface-muted"}`}>
-                    {STATUS_LABEL[t.status]}
-                  </span>
-                </div>
-                <p className="text-xs text-text-secondary truncate mt-0.5">{t.lastMessage}</p>
-                <p className="text-[11px] text-text-secondary mt-1">{timeAgo(t.lastMessageAt)}</p>
-              </div>
-            </Link>
-          </li>
-        ))}
-      </ul>
+
+      <div className="mt-10">
+        {tickets.isPending ? (
+          <div className="skeleton h-32" />
+        ) : tickets.data?.length === 0 ? (
+          <EmptyState icon={<MessageCircle />} title="No conversations yet" body="Questions you ask our team will appear here." />
+        ) : (
+          <ul className="rows">
+            {tickets.data?.map((t) => (
+              <li key={t.id}>
+                <Link href={`/support/${t.id}`} className="group flex items-center gap-4 py-5">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-3">
+                      <p className="font-medium text-ink">{t.orderNumber ? `Order #${t.orderNumber}` : "General question"}</p>
+                      <span className={`badge ${STATUS[t.status].badge}`}>{STATUS[t.status].label}</span>
+                    </div>
+                    <p className="mt-1 truncate text-sm text-ink-muted">{t.lastMessage}</p>
+                    <p className="mt-1 text-xs text-ink-muted">{timeAgo(t.lastMessageAt)}</p>
+                  </div>
+                  <ChevronRight className="h-4 w-4 shrink-0 text-ink-muted transition-transform group-hover:translate-x-0.5" />
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
       <HelpSheet open={open} onClose={() => setOpen(false)} />
     </div>
   );

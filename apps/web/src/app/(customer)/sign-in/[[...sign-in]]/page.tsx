@@ -3,15 +3,23 @@
 import React, { Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { SignIn } from "@clerk/nextjs";
-import { AlertTriangle } from "lucide-react";
+import { ChevronRight } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { LogoMark } from "@/components/brand/logo";
 import { CLERK_ENABLED } from "@/features/auth/clerk-config";
 import { DEMO_PERSONAS, useDemoAuthStore } from "@/features/auth/demo-auth-store";
-import { useQueryClient } from "@tanstack/react-query";
 
 function safeRedirect(target: string | null): string | null {
   // Only same-site paths: never bounce users to an attacker-supplied absolute URL
   return target && target.startsWith("/") && !target.startsWith("//") ? target : null;
 }
+
+const ROLE_LABEL: Record<string, string> = {
+  CUSTOMER: "Customer",
+  MERCHANT_STAFF: "Restaurant staff",
+  RIDER: "Delivery partner",
+  ADMIN: "Operations admin",
+};
 
 function DemoSignIn() {
   const router = useRouter();
@@ -21,37 +29,43 @@ function DemoSignIn() {
   const redirect = safeRedirect(params.get("redirect_url"));
 
   return (
-    <div className="max-w-md mx-auto my-12 px-4">
-      <div className="bg-white rounded-3xl border border-border p-8 shadow-xl space-y-6">
-        <div className="text-center">
-          <img src="/icons/icon-192.png" alt="" className="w-12 h-12 rounded-2xl mx-auto mb-3" />
-          <h1 className="text-2xl font-black">Sign in</h1>
-        </div>
-        <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex gap-2">
-          <AlertTriangle className="w-4 h-4 shrink-0" />
-          <span>
-            Development mode: Clerk is not configured, so you can sign in as a demo persona. Set <code>NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY</code> and{" "}
-            <code>CLERK_ISSUER</code> for real accounts. The server rejects demo personas in staging and production.
-          </span>
-        </div>
-        <ul className="space-y-3">
-          {DEMO_PERSONAS.map((p) => (
-            <li key={p.key}>
-              <button
-                onClick={() => {
-                  signIn(p.key);
-                  queryClient.clear();
-                  router.push(redirect ?? p.home);
-                }}
-                className="w-full p-4 rounded-2xl border border-border hover:border-brand text-left"
-              >
-                <p className="font-bold text-sm">{p.name}</p>
-                <p className="text-xs text-text-secondary">{p.role.replace("_", " ").toLowerCase()}</p>
-              </button>
-            </li>
-          ))}
-        </ul>
-      </div>
+    <div className="mx-auto w-full max-w-md px-5 py-16 sm:py-24">
+      <LogoMark className="h-10 w-10" />
+      <h1 className="h-page mt-8">Welcome to BiteBox</h1>
+      <p className="mt-2 text-[15px] text-ink-muted">Choose an account to continue.</p>
+
+      <ul className="mt-10 space-y-2">
+        {DEMO_PERSONAS.map((p) => (
+          <li key={p.key}>
+            <button
+              onClick={() => {
+                signIn(p.key);
+                queryClient.clear();
+                router.push(redirect ?? p.home);
+              }}
+              className="group flex w-full items-center gap-4 rounded-3xl border border-line p-4 text-left transition-colors hover:border-ink"
+            >
+              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-subtle text-sm font-semibold text-ink">
+                {p.name
+                  .split(" ")
+                  .map((w) => w[0])
+                  .slice(0, 2)
+                  .join("")}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block font-medium text-ink">{p.name}</span>
+                <span className="block text-sm text-ink-muted">{ROLE_LABEL[p.role] ?? p.role}</span>
+              </span>
+              <ChevronRight className="h-4 w-4 text-ink-muted transition-transform group-hover:translate-x-0.5" />
+            </button>
+          </li>
+        ))}
+      </ul>
+
+      <p className="notice notice-neutral mt-10 text-xs">
+        Development mode: Clerk isn&apos;t configured, so you can sign in as a demo persona. Set NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY and CLERK_ISSUER for real accounts. The
+        server rejects demo personas in staging and production.
+      </p>
     </div>
   );
 }
@@ -59,7 +73,7 @@ function DemoSignIn() {
 function ClerkSignIn() {
   const params = useSearchParams();
   return (
-    <div className="flex justify-center my-12 px-4">
+    <div className="flex justify-center px-5 py-16">
       <SignIn routing="path" path="/sign-in" signUpUrl="/sign-up" forceRedirectUrl={safeRedirect(params.get("redirect_url")) ?? "/"} />
     </div>
   );

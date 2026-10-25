@@ -2,51 +2,86 @@
 
 import React, { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Trash2 } from "lucide-react";
+import { Plus, X } from "lucide-react";
 import type { OpeningHours } from "@startup/contracts";
-import { Spinner } from "@/components/ui/misc";
+import { Field, Toggle } from "@/components/ui/field";
+import { ActionDialog } from "@/components/ui/modal";
+import { PageSpinner, Spinner } from "@/components/ui/misc";
 import { useToast } from "@/components/ui/toast";
 import { errorMessage, useApi } from "@/lib/api";
 
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
-const field = "w-full p-2.5 rounded-xl border border-border text-sm";
+const DAY_LABEL: Record<(typeof DAYS)[number], string> = { mon: "Monday", tue: "Tuesday", wed: "Wednesday", thu: "Thursday", fri: "Friday", sat: "Saturday", sun: "Sunday" };
+const STAFF_ROLE_LABEL: Record<string, string> = { OWNER: "Owner", MANAGER: "Manager", KITCHEN: "Kitchen", CATALOG_EDITOR: "Menu editor" };
 
 function HoursEditor({ value, onChange }: { value: OpeningHours | null; onChange: (v: OpeningHours | null) => void }) {
   const alwaysOpen = !value;
   return (
-    <div className="space-y-2">
-      <label className="flex items-center gap-2 text-sm font-semibold">
-        <input type="checkbox" checked={alwaysOpen} onChange={(e) => onChange(e.target.checked ? null : Object.fromEntries(DAYS.map((d) => [d, [["11:00", "23:00"]]])) as OpeningHours)} />
-        Open 24 hours, every day
-      </label>
-      {!alwaysOpen &&
-        DAYS.map((day) => {
-          const ranges = value![day] ?? [];
-          const setRanges = (r: [string, string][]) => onChange({ ...value!, [day]: r });
-          return (
-            <div key={day} className="flex items-start gap-3 text-sm">
-              <span className="w-10 pt-2 font-bold capitalize">{day}</span>
-              <div className="flex-1 space-y-1">
-                {ranges.length === 0 && <p className="text-xs text-text-secondary pt-2">Closed</p>}
-                {ranges.map(([open, close], i) => (
-                  <div key={i} className="flex items-center gap-2">
-                    <input type="time" value={open} onChange={(e) => setRanges(ranges.map((r, j) => (j === i ? [e.target.value, r[1]] : r)) as [string, string][])} className="p-1.5 rounded-lg border border-border" />
-                    <span>–</span>
-                    <input type="time" value={close} onChange={(e) => setRanges(ranges.map((r, j) => (j === i ? [r[0], e.target.value] : r)) as [string, string][])} className="p-1.5 rounded-lg border border-border" />
-                    {close <= open && <span className="text-[10px] text-text-secondary">next day</span>}
-                    <button aria-label="Remove time range" onClick={() => setRanges(ranges.filter((_, j) => j !== i))} className="p-1 text-text-secondary">
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                ))}
-                <button onClick={() => setRanges([...ranges, ["18:00", "23:00"]])} className="text-xs font-bold text-brand">
-                  + Add hours
-                </button>
-              </div>
-            </div>
-          );
-        })}
+    <div className="space-y-6">
+      <div className="flex items-center justify-between gap-4 rounded-2xl bg-subtle px-4 py-3">
+        <span className="text-sm text-ink">Open 24 hours, every day</span>
+        <Toggle
+          size="sm"
+          label="Open 24 hours"
+          checked={alwaysOpen}
+          onChange={(on) => onChange(on ? null : (Object.fromEntries(DAYS.map((d) => [d, [["11:00", "23:00"]]])) as OpeningHours))}
+        />
+      </div>
+      {!alwaysOpen && (
+        <ul className="rows">
+          {DAYS.map((day) => {
+            const ranges = value![day] ?? [];
+            const setRanges = (r: [string, string][]) => onChange({ ...value!, [day]: r });
+            return (
+              <li key={day} className="flex flex-col gap-3 py-4 sm:flex-row sm:items-start">
+                <span className="w-28 pt-2 text-sm font-medium text-ink">{DAY_LABEL[day]}</span>
+                <div className="flex-1 space-y-2">
+                  {ranges.length === 0 && <p className="pt-2 text-sm text-ink-muted">Closed</p>}
+                  {ranges.map(([open, close], i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <input
+                        type="time"
+                        aria-label={`${DAY_LABEL[day]} opens`}
+                        value={open}
+                        onChange={(e) => setRanges(ranges.map((r, j) => (j === i ? [e.target.value, r[1]] : r)) as [string, string][])}
+                        className="input input-sm w-32"
+                      />
+                      <span className="text-ink-muted">–</span>
+                      <input
+                        type="time"
+                        aria-label={`${DAY_LABEL[day]} closes`}
+                        value={close}
+                        onChange={(e) => setRanges(ranges.map((r, j) => (j === i ? [r[0], e.target.value] : r)) as [string, string][])}
+                        className="input input-sm w-32"
+                      />
+                      {close <= open && <span className="text-xs text-ink-muted">next day</span>}
+                      <button aria-label="Remove time range" onClick={() => setRanges(ranges.filter((_, j) => j !== i))} className="btn btn-ghost btn-icon h-8 w-8">
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ))}
+                  <button onClick={() => setRanges([...ranges, ["18:00", "23:00"]])} className="btn btn-ghost btn-sm -ml-4">
+                    <Plus className="h-3.5 w-3.5" /> Add hours
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
+  );
+}
+
+function Block({ title, body, first, children }: { title: string; body?: string; first?: boolean; children: React.ReactNode }) {
+  return (
+    <section className={`grid gap-6 lg:grid-cols-[260px_1fr] lg:gap-16 ${first ? "pb-10" : "border-t border-line py-10"}`}>
+      <div>
+        <h2 className="text-base font-semibold text-ink">{title}</h2>
+        {body && <p className="mt-1.5 text-sm leading-relaxed text-ink-muted">{body}</p>}
+      </div>
+      <div className="min-w-0 max-w-2xl">{children}</div>
+    </section>
   );
 }
 
@@ -59,6 +94,7 @@ export function OutletSettings({ restaurantId, isOwner }: { restaurantId: string
   const [staffEmail, setStaffEmail] = useState("");
   const [staffRole, setStaffRole] = useState("KITCHEN");
   const [busy, setBusy] = useState(false);
+  const [removing, setRemoving] = useState<{ userId: string; name: string } | null>(null);
 
   useEffect(() => {
     const r = menu.data?.restaurant;
@@ -76,9 +112,9 @@ export function OutletSettings({ restaurantId, isOwner }: { restaurantId: string
     }
   }, [menu.data, s]);
 
-  if (!s) return <Spinner />;
+  if (!s) return <PageSpinner />;
   return (
-    <div className="space-y-8">
+    <div>
       <form
         onSubmit={async (e) => {
           e.preventDefault();
@@ -101,49 +137,57 @@ export function OutletSettings({ restaurantId, isOwner }: { restaurantId: string
             setBusy(false);
           }
         }}
-        className="space-y-4"
+        className="contents"
       >
-        <div className="grid sm:grid-cols-2 gap-3">
-          <label className="text-xs font-semibold text-text-secondary">Outlet phone<input value={s.phone} onChange={(e) => setS({ ...s, phone: e.target.value })} className={field} /></label>
-          <label className="text-xs font-semibold text-text-secondary">Packaging charge (₹)<input inputMode="decimal" value={s.packaging} onChange={(e) => setS({ ...s, packaging: e.target.value })} className={field} /></label>
-          <label className="text-xs font-semibold text-text-secondary">Average preparation time (min)<input type="number" min={5} max={90} value={s.prep} onChange={(e) => setS({ ...s, prep: e.target.value })} className={field} /></label>
-          <label className="text-xs font-semibold text-text-secondary">Average price for one (₹)<input inputMode="decimal" value={s.avgPrice} onChange={(e) => setS({ ...s, avgPrice: e.target.value })} className={field} /></label>
-        </div>
-        <label className="block text-xs font-semibold text-text-secondary">Cover photo URL<input value={s.heroImageUrl} onChange={(e) => setS({ ...s, heroImageUrl: e.target.value })} className={field} /></label>
-        <label className="block text-xs font-semibold text-text-secondary">About the outlet<textarea rows={2} maxLength={300} value={s.description} onChange={(e) => setS({ ...s, description: e.target.value })} className={field} /></label>
-        <label className="flex items-center gap-2 text-sm font-semibold">
-          <input type="checkbox" checked={s.isOpen} onChange={(e) => setS({ ...s, isOpen: e.target.checked })} />
-          Outlet operating (untick to close until further notice)
-        </label>
-        <div>
-          <h3 className="font-bold mb-2">Opening hours (IST)</h3>
-          <HoursEditor value={s.hours} onChange={(hours) => setS({ ...s, hours })} />
-        </div>
-        <button disabled={busy} className="px-5 py-2.5 rounded-xl bg-brand text-white text-sm font-bold">
-          Save settings
-        </button>
+        <Block first title="Outlet" body="What customers see on your page.">
+          <div className="grid gap-5 sm:grid-cols-2">
+            <Field label="Outlet phone">
+              <input value={s.phone} onChange={(e) => setS({ ...s, phone: e.target.value })} className="input" inputMode="tel" />
+            </Field>
+            <Field label="Average price for one (₹)">
+              <input inputMode="decimal" value={s.avgPrice} onChange={(e) => setS({ ...s, avgPrice: e.target.value })} className="input" />
+            </Field>
+            <Field label="Packaging charge (₹)">
+              <input inputMode="decimal" value={s.packaging} onChange={(e) => setS({ ...s, packaging: e.target.value })} className="input" />
+            </Field>
+            <Field label="Average preparation time (min)">
+              <input type="number" min={5} max={90} value={s.prep} onChange={(e) => setS({ ...s, prep: e.target.value })} className="input" />
+            </Field>
+            <Field label="Cover photo URL" className="sm:col-span-2">
+              <input value={s.heroImageUrl} onChange={(e) => setS({ ...s, heroImageUrl: e.target.value })} className="input" />
+            </Field>
+            <Field label="About the outlet" className="sm:col-span-2">
+              <textarea rows={3} maxLength={300} value={s.description} onChange={(e) => setS({ ...s, description: e.target.value })} className="input" />
+            </Field>
+          </div>
+        </Block>
+
+        <Block title="Hours" body="All times are IST. Turn the outlet off to close until further notice.">
+          <div className="space-y-6">
+            <div className="flex items-center justify-between gap-4 rounded-2xl bg-subtle px-4 py-3">
+              <span className="text-sm text-ink">Outlet operating</span>
+              <Toggle size="sm" label="Outlet operating" checked={s.isOpen} onChange={(isOpen) => setS({ ...s, isOpen })} />
+            </div>
+            <HoursEditor value={s.hours} onChange={(hours) => setS({ ...s, hours })} />
+            <button disabled={busy} className="btn btn-primary">
+              {busy && <Spinner />} Save settings
+            </button>
+          </div>
+        </Block>
       </form>
 
-      <section>
-        <h3 className="font-bold mb-2">Staff</h3>
-        <ul className="divide-y divide-border rounded-2xl border border-border bg-white">
+      <Block title="Staff" body="People who can use this console. Kitchen staff see orders and stock; menu editors can change dishes.">
+        <ul className="rows">
           {staff.data?.map((m) => (
-            <li key={m.userId} className="p-3 flex items-center justify-between text-sm">
-              <span>
-                {m.name} <span className="text-xs text-text-secondary">· {m.email} · {m.staffRole.toLowerCase().replace("_", " ")}</span>
-              </span>
+            <li key={m.userId} className="flex items-center justify-between gap-4 py-4">
+              <div className="min-w-0">
+                <p className="text-[15px] font-medium text-ink">{m.name}</p>
+                <p className="truncate text-sm text-ink-muted">
+                  {m.email} · {STAFF_ROLE_LABEL[m.staffRole] ?? m.staffRole}
+                </p>
+              </div>
               {isOwner && m.staffRole !== "OWNER" && (
-                <button
-                  onClick={async () => {
-                    try {
-                      await api.removeStaff(restaurantId, m.userId);
-                      staff.refetch();
-                    } catch (err) {
-                      toast(errorMessage(err), "error");
-                    }
-                  }}
-                  className="text-xs font-bold text-red-700"
-                >
+                <button onClick={() => setRemoving({ userId: m.userId, name: m.name })} className="btn btn-danger-ghost btn-sm">
                   Remove
                 </button>
               )}
@@ -163,18 +207,35 @@ export function OutletSettings({ restaurantId, isOwner }: { restaurantId: string
                 toast(errorMessage(err), "error");
               }
             }}
-            className="flex flex-wrap gap-2 mt-3"
+            className="mt-6 flex flex-wrap gap-2"
           >
-            <input required type="email" placeholder="Their account email" value={staffEmail} onChange={(e) => setStaffEmail(e.target.value)} className="flex-1 min-w-[200px] p-2.5 rounded-xl border border-border text-sm" />
-            <select value={staffRole} onChange={(e) => setStaffRole(e.target.value)} className="p-2.5 rounded-xl border border-border text-sm">
-              <option value="KITCHEN">Kitchen (orders & stock)</option>
+            <input required type="email" placeholder="Their account email" aria-label="Staff email" value={staffEmail} onChange={(e) => setStaffEmail(e.target.value)} className="input min-w-[200px] flex-1" />
+            <select value={staffRole} onChange={(e) => setStaffRole(e.target.value)} aria-label="Staff role" className="input w-auto">
+              <option value="KITCHEN">Kitchen</option>
               <option value="CATALOG_EDITOR">Menu editor</option>
               <option value="MANAGER">Manager</option>
             </select>
-            <button className="px-4 py-2.5 rounded-xl bg-text-primary text-white text-sm font-bold">Add</button>
+            <button className="btn btn-primary h-12">Add</button>
           </form>
         )}
-      </section>
+      </Block>
+
+      <ActionDialog
+        open={!!removing}
+        onClose={() => setRemoving(null)}
+        title={`Remove ${removing?.name}?`}
+        description="They'll lose access to this console immediately."
+        confirmLabel="Remove"
+        tone="danger"
+        onConfirm={async () => {
+          try {
+            await api.removeStaff(restaurantId, removing!.userId);
+            staff.refetch();
+          } catch (err) {
+            toast(errorMessage(err), "error");
+          }
+        }}
+      />
     </div>
   );
 }

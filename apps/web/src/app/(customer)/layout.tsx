@@ -7,9 +7,9 @@ import { InstallPrompt } from "@/features/pwa/install-prompt";
 
 export default function CustomerLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen flex flex-col bg-white">
+    <div className="flex min-h-screen flex-col bg-white">
       <Header />
-      <main className="flex-1 pb-24 sm:pb-0">{children}</main>
+      <main className="flex-1 pb-36 sm:pb-0">{children}</main>
       <CartBar />
       <div className="hidden sm:block">
         <Footer />

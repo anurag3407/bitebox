@@ -13,8 +13,8 @@
 ## 3. Commands / Dashboard References
 ```bash
 # On new VPS: Clone repository and set production environment
-git clone https://github.com/org/zomatofresh /opt/zomatofresh
-cd /opt/zomatofresh
+git clone https://github.com/org/bitebox /opt/bitebox
+cd /opt/bitebox
 cp /secure-vault/.env .env
 ./infra/scripts/deploy.sh
 ```
@@ -27,7 +27,7 @@ cp /secure-vault/.env .env
 - Lead DevOps / Infrastructure Engineer & Head of Engineering.
 
 ## 6. Recovery Verification
-- Run `curl -fsS https://zomatofresh.local/api/v1/health`.
+- Run `curl -fsS https://bitebox.local/api/v1/health`.
 - Verify background worker is actively acquiring leases from PostgreSQL `jobs` table.
 
 ## 7. Customer Communication

@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { Star, Zap, Tag, ArrowUpDown } from "lucide-react";
+import { X } from "lucide-react";
 
 export type SortOption = "relevance" | "distance" | "rating" | "delivery_time" | "cost_low_to_high" | "cost_high_to_low";
 
@@ -14,27 +14,13 @@ export interface DiscoveryFilters {
 }
 
 const SORT_LABELS: Record<SortOption, string> = {
-  relevance: "Relevance",
-  distance: "Distance",
-  rating: "Rating: high to low",
-  delivery_time: "Delivery time",
-  cost_low_to_high: "Cost: low to high",
-  cost_high_to_low: "Cost: high to low",
+  relevance: "Recommended",
+  distance: "Nearest",
+  rating: "Top rated",
+  delivery_time: "Fastest",
+  cost_low_to_high: "Price: low to high",
+  cost_high_to_low: "Price: high to low",
 };
-
-function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button
-      onClick={onClick}
-      aria-pressed={active}
-      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-semibold transition-all shrink-0 ${
-        active ? "bg-brand-light text-brand border-brand" : "bg-white text-text-primary border-border hover:bg-surface-muted"
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
 
 export function FilterBar({
   filters,
@@ -49,14 +35,13 @@ export function FilterBar({
   const active = Number(filters.pureVeg) + Number(!!filters.minRating) + Number(filters.fastDelivery) + Number(filters.hasOffer);
 
   return (
-    <div className="flex items-center gap-2 overflow-x-auto py-3 border-y border-border sticky top-16 bg-white z-30 -mx-4 px-4 sm:mx-0 sm:px-0">
-      <label className="flex items-center gap-1 px-3 py-1.5 rounded-full border border-border text-xs font-semibold shrink-0">
-        <ArrowUpDown className="w-3.5 h-3.5" />
+    <div className="no-scrollbar -mx-5 flex items-center gap-2 overflow-x-auto px-5 sm:mx-0 sm:px-0">
+      <label className="relative shrink-0">
+        <span className="sr-only">Sort restaurants</span>
         <select
           value={filters.sortBy}
           onChange={(e) => set({ sortBy: e.target.value as SortOption })}
-          className="bg-transparent focus:outline-none"
-          aria-label="Sort restaurants"
+          className={`chip cursor-pointer appearance-none pr-9 [&>option]:text-ink ${filters.sortBy !== "relevance" ? "chip-active" : ""}`}
         >
           {(Object.keys(SORT_LABELS) as SortOption[])
             .filter((k) => hasLocation || k !== "distance")
@@ -66,28 +51,29 @@ export function FilterBar({
               </option>
             ))}
         </select>
+        <svg viewBox="0 0 16 16" className="pointer-events-none absolute right-3.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 fill-none stroke-current" strokeWidth="2" aria-hidden>
+          <path d="m4 6 4 4 4-4" className={filters.sortBy !== "relevance" ? "stroke-white" : "stroke-ink-muted"} />
+        </svg>
       </label>
-      <Chip active={filters.pureVeg} onClick={() => set({ pureVeg: !filters.pureVeg })}>
-        <span className="w-2.5 h-2.5 rounded-sm border border-success flex items-center justify-center">
-          <span className="w-1.5 h-1.5 rounded-full bg-success" />
-        </span>
-        Pure Veg
-      </Chip>
-      <Chip active={!!filters.minRating} onClick={() => set({ minRating: filters.minRating ? null : 4 })}>
-        <Star className="w-3.5 h-3.5" /> Rating 4.0+
-      </Chip>
-      <Chip active={filters.fastDelivery} onClick={() => set({ fastDelivery: !filters.fastDelivery })}>
-        <Zap className="w-3.5 h-3.5 text-amber-500" /> Under 30 mins
-      </Chip>
-      <Chip active={filters.hasOffer} onClick={() => set({ hasOffer: !filters.hasOffer })}>
-        <Tag className="w-3.5 h-3.5" /> Offers
-      </Chip>
+      <span className="mx-1 h-5 w-px shrink-0 bg-line" aria-hidden />
+      <button className="chip" aria-pressed={filters.pureVeg} onClick={() => set({ pureVeg: !filters.pureVeg })}>
+        Pure veg
+      </button>
+      <button className="chip" aria-pressed={!!filters.minRating} onClick={() => set({ minRating: filters.minRating ? null : 4 })}>
+        Rated 4.0+
+      </button>
+      <button className="chip" aria-pressed={filters.fastDelivery} onClick={() => set({ fastDelivery: !filters.fastDelivery })}>
+        Under 30 min
+      </button>
+      <button className="chip" aria-pressed={filters.hasOffer} onClick={() => set({ hasOffer: !filters.hasOffer })}>
+        Offers
+      </button>
       {active > 0 && (
         <button
           onClick={() => onChange({ pureVeg: false, minRating: null, fastDelivery: false, hasOffer: false, sortBy: filters.sortBy })}
-          className="text-xs text-brand font-bold underline shrink-0 ml-1"
+          className="btn btn-ghost btn-sm gap-1"
         >
-          Clear ({active})
+          <X className="h-3.5 w-3.5" /> Clear
         </button>
       )}
     </div>

@@ -11,8 +11,16 @@ export default async function setup() {
   }
   const { runMigrations } = await import("../src/migrate.js");
   const { runSeeds } = await import("../src/seeds/seed.js");
-  const { closeDbPool } = await import("../src/client.js");
+  const { closeDbPool, getDbPool } = await import("../src/client.js");
+  const { SEED_IDS } = await import("../src/seeds/seed.js");
   await runMigrations({ log: () => undefined });
   await runSeeds();
+  // Tests add addresses to the fixture customer; drop leftovers from earlier runs so the
+  // per-user address cap is never reached and the seeded address stays the default
+  await getDbPool().query(
+    `UPDATE customer_addresses SET deleted_at = NOW(), is_default = false WHERE user_id = $1 AND id <> $2 AND deleted_at IS NULL`,
+    [SEED_IDS.customerUserId, SEED_IDS.customerAddressId]
+  );
+  await getDbPool().query(`UPDATE customer_addresses SET is_default = true WHERE id = $1`, [SEED_IDS.customerAddressId]);
   await closeDbPool();
 }

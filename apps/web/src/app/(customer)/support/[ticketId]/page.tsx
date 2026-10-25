@@ -6,7 +6,7 @@ import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 import { ChatThread } from "@/components/support/chat-thread";
-import { EmptyState, Spinner } from "@/components/ui/misc";
+import { EmptyState, PageSpinner } from "@/components/ui/misc";
 import { useToast } from "@/components/ui/toast";
 import { useAuth } from "@/features/auth/auth-context";
 import { errorMessage, useApi } from "@/lib/api";
@@ -23,24 +23,24 @@ export default function SupportThreadPage() {
     refetchInterval: 5000,
   });
 
-  if (thread.isPending) return <div className="p-10 text-center"><Spinner /></div>;
-  if (!thread.data) return <div className="max-w-md mx-auto my-16 px-4"><EmptyState title="Conversation not found" body={errorMessage(thread.error)} /></div>;
+  if (thread.isPending) return <PageSpinner />;
+  if (!thread.data) return <EmptyState title="Conversation not found" body={errorMessage(thread.error)} />;
   const t = thread.data.ticket;
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col h-[calc(100vh-9rem)]">
-      <div className="flex items-center justify-between mb-3">
-        <Link href="/support" className="flex items-center gap-1.5 text-xs font-bold text-text-secondary">
-          <ArrowLeft className="w-4 h-4" /> All conversations
+    <div className="page-narrow flex h-[calc(100dvh-9rem)] flex-col pt-6 sm:h-[calc(100dvh-72px)] sm:pb-8">
+      <div className="flex items-center justify-between border-b border-line pb-4">
+        <Link href="/support" className="btn btn-ghost btn-sm -ml-4 gap-1.5">
+          <ArrowLeft className="h-4 w-4" /> Help
         </Link>
         {t.orderId && (
-          <Link href={`/orders/${t.orderId}`} className="text-xs font-bold text-brand">
+          <Link href={`/orders/${t.orderId}`} className="link text-sm">
             Order #{t.orderNumber}
           </Link>
         )}
       </div>
-      {t.status === "RESOLVED" && <p className="text-xs p-2 rounded-lg bg-success-light text-success mb-2">Resolved: {t.resolution}. Reply to reopen.</p>}
-      <div className="flex-1 min-h-0">
+      {t.status === "RESOLVED" && <p className="notice notice-success mt-4">Resolved: {t.resolution}. Reply to reopen.</p>}
+      <div className="min-h-0 flex-1 pt-4">
         <ChatThread
           thread={thread.data}
           viewer="CUSTOMER"

@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AddressDto, Coordinate } from "@startup/contracts";
-import { Crosshair, MapPin, Search, Home, Briefcase } from "lucide-react";
+import { Briefcase, ChevronRight, Home, LocateFixed, MapPin, Search } from "lucide-react";
 import { Modal } from "@/components/ui/modal";
 import { Spinner } from "@/components/ui/misc";
 import { useToast } from "@/components/ui/toast";
@@ -24,10 +24,11 @@ export function LocationSheet({ open, onClose, requireSavedAddress }: LocationSh
   const api = useApi();
   const toast = useToast();
   const { isSignedIn } = useAuth();
-  const { setAddress, setPin } = useLocationStore();
+  const { setAddress, setPin, addressId } = useLocationStore();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Array<{ label: string; latitude: number; longitude: number }>>([]);
   const [searchEnabled, setSearchEnabled] = useState(true);
+  const [searching, setSearching] = useState(false);
   const [locating, setLocating] = useState(false);
   const [draft, setDraft] = useState<{ location: Coordinate; label?: string } | null>(null);
 
@@ -48,18 +49,27 @@ export function LocationSheet({ open, onClose, requireSavedAddress }: LocationSh
   useEffect(() => {
     if (query.trim().length < 3) {
       setResults([]);
+      setSearching(false);
       return;
     }
+    setSearching(true);
+    let cancelled = false;
     const t = setTimeout(async () => {
       try {
         const res = await api.geocode({ q: query.trim() });
+        if (cancelled) return;
         setResults(res.results);
         setSearchEnabled(res.enabled);
       } catch {
-        setResults([]);
+        if (!cancelled) setResults([]);
+      } finally {
+        if (!cancelled) setSearching(false);
       }
     }, 300);
-    return () => clearTimeout(t);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
   }, [query, api]);
 
   const choosePoint = async (location: Coordinate, label?: string) => {
@@ -94,12 +104,14 @@ export function LocationSheet({ open, onClose, requireSavedAddress }: LocationSh
     onClose();
   };
 
+  const row = "flex w-full items-center gap-4 rounded-2xl px-3 py-3.5 text-left transition-colors hover:bg-subtle";
+
   return (
     <Modal
       open={open}
       onClose={onClose}
-      title={draft ? "Add address details" : "Choose delivery location"}
-      description={draft ? draft.label : "We'll show restaurants that deliver here"}
+      title={draft ? "Address details" : "Where should we deliver?"}
+      description={draft ? draft.label : "We'll show restaurants that deliver to you."}
     >
       {draft ? (
         <AddressForm
@@ -112,53 +124,60 @@ export function LocationSheet({ open, onClose, requireSavedAddress }: LocationSh
           }}
         />
       ) : (
-        <div className="space-y-5">
-          <button
-            onClick={useCurrentLocation}
-            disabled={locating}
-            className="w-full flex items-center gap-3 p-3 rounded-2xl border border-brand/30 bg-brand-light/40 text-brand font-bold text-sm"
-          >
-            {locating ? <Spinner /> : <Crosshair className="w-5 h-5" />}
-            Use my current location
-          </button>
-
+        <div className="space-y-6 pb-2">
           <div className="relative">
-            <Search className="w-4 h-4 text-text-secondary absolute left-3 top-3.5" />
+            <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-muted" />
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search for area, street name..."
-              className="w-full pl-9 pr-3 py-3 bg-surface-muted border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand/20"
+              placeholder="Search for an area or street"
+              aria-label="Search for an area or street"
+              className="input pl-11"
             />
-            {!searchEnabled && query.length >= 3 && (
-              <p className="text-[11px] text-text-secondary mt-1">Address search is not configured; use your current location.</p>
-            )}
-            {results.length > 0 && (
-              <ul className="mt-2 divide-y divide-border border border-border rounded-xl overflow-hidden">
-                {results.map((r) => (
-                  <li key={`${r.latitude},${r.longitude}`}>
-                    <button onClick={() => choosePoint(r, r.label)} className="w-full text-left p-3 text-sm hover:bg-surface-muted flex gap-2">
-                      <MapPin className="w-4 h-4 text-text-secondary shrink-0 mt-0.5" />
-                      <span>{r.label}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
+            {searching && <Spinner className="absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-muted" />}
           </div>
 
-          {isSignedIn && (addresses.data?.length ?? 0) > 0 && (
+          {!searchEnabled && query.length >= 3 && <p className="text-sm text-ink-muted">Address search isn&apos;t configured here. Use your current location instead.</p>}
+
+          {results.length > 0 ? (
+            <ul className="-mx-3">
+              {results.map((r) => (
+                <li key={`${r.latitude},${r.longitude}`}>
+                  <button onClick={() => choosePoint(r, r.label)} className={row}>
+                    <MapPin className="h-5 w-5 shrink-0 text-ink-muted" />
+                    <span className="text-sm text-ink">{r.label}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <button onClick={useCurrentLocation} disabled={locating} className={`${row} -mx-3 w-[calc(100%+1.5rem)] disabled:opacity-60`}>
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-ink text-white">
+                {locating ? <Spinner /> : <LocateFixed className="h-5 w-5" />}
+              </span>
+              <span className="flex-1">
+                <span className="block text-sm font-medium text-ink">Use my current location</span>
+                <span className="block text-xs text-ink-muted">Using GPS</span>
+              </span>
+              <ChevronRight className="h-4 w-4 text-ink-muted" />
+            </button>
+          )}
+
+          {isSignedIn && (addresses.data?.length ?? 0) > 0 && results.length === 0 && (
             <div>
-              <h3 className="text-xs font-bold text-text-secondary uppercase tracking-wider mb-2">Saved addresses</h3>
-              <ul className="space-y-2">
+              <h3 className="eyebrow mb-2">Saved addresses</h3>
+              <ul className="-mx-3">
                 {addresses.data!.map((a) => (
                   <li key={a.id}>
-                    <button onClick={() => pickSaved(a)} className="w-full text-left p-3 rounded-xl border border-border hover:border-brand flex gap-3">
-                      {a.label === "Work" ? <Briefcase className="w-4 h-4 mt-0.5 text-text-secondary" /> : <Home className="w-4 h-4 mt-0.5 text-text-secondary" />}
-                      <span>
-                        <span className="block text-sm font-bold text-text-primary">{a.label}</span>
-                        <span className="block text-xs text-text-secondary">{addressLabel(a)}</span>
+                    <button onClick={() => pickSaved(a)} className={row}>
+                      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-subtle text-ink-soft">
+                        {a.label === "Work" ? <Briefcase className="h-4 w-4" /> : <Home className="h-4 w-4" />}
                       </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-medium text-ink">{a.label}</span>
+                        <span className="block truncate text-xs text-ink-muted">{addressLabel(a)}</span>
+                      </span>
+                      {a.id === addressId && <span className="badge badge-ink">Selected</span>}
                     </button>
                   </li>
                 ))}

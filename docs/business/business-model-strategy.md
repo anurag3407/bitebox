@@ -75,7 +75,7 @@ Those are pilot-dependent assumptions, not a forecast. The point is the shape: t
 - Do not launch a horizontal 33%-commission Zomato clone in Delhi-NCR. You will lose on customer acquisition and supply, and you will be competing on the one dimension where incumbents are strongest.
 - Do not offer 0% commission with solo on-demand delivery. Delivery is the cost; without density or merchant-owned demand, you lose money on every order.
 - Do not build ads, wallets, lending or a white-label business before you have density.
-- Do not use the name **"ZomatoFresh"** commercially. It is confusingly similar to Zomato's trademark. Rename before any launch or fundraising conversation.
+- The original working name, "ZomatoFresh", was confusingly similar to Zomato's trademark, so the product is now **BiteBox**. Run a trademark search on "BiteBox" (classes 35/39/43) before any launch or fundraising conversation.
 
 ---
 
@@ -633,7 +633,7 @@ Delivery alone barely breaks even. The commission, merchant fee, customer platfo
 - Choose one campus or office park with 3,000+ people and a single lunch peak. Talk to 30 potential customers and 10 kitchens.
 - Sign 3 kitchens plus one backup. Collect FSSAI licenses, menus, capacity commitments, bank details and payout accounts.
 - Agree: ₹78/meal payout, 10am cutoff, 98% on-time readiness, replacement/penalty policy, weekly payout.
-- Rename the brand and check trademark; do not print "ZomatoFresh" on packaging.
+- Clear the "BiteBox" trademark search before printing it on packaging.
 
 ### Weeks 3–4: build the minimum and pre-sell
 
@@ -699,7 +699,7 @@ Delivery alone barely breaks even. The commission, merchant fee, customer platfo
 | **Prepaid float** | Customer money held before meals are delivered can look like a deposit or wallet. | Designated account/escrow, revenue recognition as meals are delivered, refund unused credits, no general-purpose wallet, legal review. |
 | **GST / TCS / TDS** | Food (5%), platform services (18%), e-commerce operator withholding and invoicing rules are easy to get wrong. | CA-reviewed flow; invoices/credit notes already modeled; confirm who is the supplier in each model. |
 | **Rider classification** | Gig vs employee status, insurance, working hours. | Written contracts, insurance, transparent earnings, comply with Code on Social Security/e-Shram as applicable. |
-| **Trademark** | "ZomatoFresh" is confusingly similar to Zomato. | Rename before launch; search trademark classes 35/39/43. |
+| **Trademark** | The original working name "ZomatoFresh" was confusingly similar to Zomato; renamed to BiteBox. | Search "BiteBox" in trademark classes 35/39/43 before launch. |
 | **Attribution disputes** | Merchants will challenge "platform-originated" vs "merchant-originated." | Signed links, last-touch 30-day rule, immutable order source, published policy, monthly audit. |
 | **Discount addiction** | Discounted growth hides a broken unit economic model. | No platform-funded deep discounts; cap promotions; track contribution, not GMV. |
 | **Incumbent response** | Zomato/Swiggy can copy a capped commission or a pass. | Compete on cluster density, merchant relationships and operational reliability; do not compete on selection. |

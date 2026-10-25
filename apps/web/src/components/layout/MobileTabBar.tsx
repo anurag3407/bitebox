@@ -1,35 +1,33 @@
 "use client";
 
+import React, { Suspense } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { Home, Search, Receipt, ShoppingBag } from "lucide-react";
-import { useCartStore } from "@/features/cart/cart-store";
+import { usePathname, useSearchParams } from "next/navigation";
+import { Home, Receipt, Search, User } from "lucide-react";
 
 const TABS = [
-  { href: "/", label: "Delivery", icon: Home, match: (p: string) => p === "/" || p.startsWith("/restaurants") },
+  { href: "/", label: "Home", icon: Home, match: (p: string) => p === "/" || p.startsWith("/restaurants") },
   { href: "/search", label: "Search", icon: Search, match: (p: string) => p.startsWith("/search") },
-  { href: "/account?tab=orders", label: "Orders", icon: Receipt, match: (p: string) => p.startsWith("/account") || p.startsWith("/orders") },
-  { href: "/checkout", label: "Cart", icon: ShoppingBag, match: (p: string) => p.startsWith("/checkout") },
+  { href: "/account?tab=orders", label: "Orders", icon: Receipt, match: (p: string, tab: string | null) => p.startsWith("/orders") || (p === "/account" && (tab ?? "orders") === "orders") },
+  { href: "/account?tab=profile", label: "Account", icon: User, match: (p: string, tab: string | null) => (p === "/account" && !!tab && tab !== "orders") || p.startsWith("/support") },
 ];
 
-/** App-style bottom navigation for phones / installed PWA. */
-export function MobileTabBar() {
+function TabBar({ tab }: { tab: string | null }) {
   const pathname = usePathname();
-  const count = useCartStore((s) => s.getItemCount());
+  if (pathname.startsWith("/checkout")) return null;
   return (
-    <nav className="sm:hidden fixed bottom-0 inset-x-0 z-40 bg-white border-t border-border pb-[env(safe-area-inset-bottom)]" aria-label="Main">
-      <ul className="grid grid-cols-4">
+    <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-line/70 bg-white/95 pb-safe backdrop-blur-xl sm:hidden" aria-label="Main">
+      <ul className="grid h-16 grid-cols-4">
         {TABS.map((t) => {
-          const active = t.match(pathname);
+          const active = t.match(pathname, tab);
           return (
-            <li key={t.href}>
-              <Link href={t.href} className={`flex flex-col items-center gap-0.5 py-2 text-[11px] font-semibold ${active ? "text-brand" : "text-text-secondary"}`}>
-                <span className="relative">
-                  <t.icon className="w-5 h-5" />
-                  {t.label === "Cart" && count > 0 && (
-                    <span className="absolute -top-1.5 -right-2 bg-brand text-white text-[9px] font-black rounded-full px-1">{count}</span>
-                  )}
-                </span>
+            <li key={t.label}>
+              <Link
+                href={t.href}
+                aria-current={active ? "page" : undefined}
+                className={`flex h-full flex-col items-center justify-center gap-1 text-[11px] font-medium transition-colors ${active ? "text-ink" : "text-ink-muted"}`}
+              >
+                <t.icon className="h-[22px] w-[22px]" strokeWidth={active ? 2.2 : 1.8} />
                 {t.label}
               </Link>
             </li>
@@ -37,5 +35,18 @@ export function MobileTabBar() {
         })}
       </ul>
     </nav>
+  );
+}
+
+function TabBarWithParams() {
+  return <TabBar tab={useSearchParams().get("tab")} />;
+}
+
+/** App-style bottom navigation for phones / installed PWA. Hidden in checkout, which is a focused flow. */
+export function MobileTabBar() {
+  return (
+    <Suspense fallback={<TabBar tab={null} />}>
+      <TabBarWithParams />
+    </Suspense>
   );
 }

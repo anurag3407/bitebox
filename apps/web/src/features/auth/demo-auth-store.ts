@@ -37,6 +37,6 @@ export const useDemoAuthStore = create<DemoAuthState>()(
       },
       signOut: () => set({ persona: null }),
     }),
-    { name: "food_delivery_demo_auth_v2" }
+    { name: "food_delivery_demo_auth_v2", skipHydration: true }
   )
 );

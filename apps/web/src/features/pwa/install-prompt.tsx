@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Download, Share, X } from "lucide-react";
+import { Share, X } from "lucide-react";
+import { LogoMark } from "@/components/brand/logo";
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -63,32 +64,34 @@ export function InstallPrompt() {
   if (!deferred && !showIos) return null;
 
   return (
-    <div className="fixed bottom-4 inset-x-4 sm:inset-x-auto sm:right-6 sm:w-96 z-[55] bg-white border border-border rounded-2xl shadow-2xl p-4 flex items-start gap-3">
-      <img src="/icons/icon-192.png" alt="" className="w-11 h-11 rounded-xl shrink-0" />
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-bold text-text-primary">Get the ZomatoFresh app</p>
+    <div className="fixed inset-x-4 top-[calc(5rem+env(safe-area-inset-top))] z-[55] flex animate-sheet-up items-center gap-4 rounded-3xl border border-line bg-white p-4 shadow-pop sm:inset-x-auto sm:bottom-8 sm:left-8 sm:top-auto sm:w-[380px]">
+      <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-accent-soft">
+        <LogoMark className="h-6 w-6" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-semibold text-ink">Get the BiteBox app</p>
         {deferred ? (
-          <p className="text-xs text-text-secondary mt-0.5">Faster ordering, live tracking and order alerts. No app store needed.</p>
+          <p className="mt-0.5 text-xs text-ink-muted">Faster ordering and live alerts. No app store needed.</p>
         ) : (
-          <p className="text-xs text-text-secondary mt-0.5 flex items-center gap-1 flex-wrap">
-            Tap <Share className="w-3.5 h-3.5 inline" /> then <b>Add to Home Screen</b>.
+          <p className="mt-0.5 flex flex-wrap items-center gap-1 text-xs text-ink-muted">
+            Tap <Share className="inline h-3.5 w-3.5" /> then <b className="font-medium text-ink">Add to Home Screen</b>
           </p>
         )}
-        {deferred && (
-          <button
-            onClick={async () => {
-              await deferred.prompt();
-              await deferred.userChoice.catch(() => undefined);
-              dismiss();
-            }}
-            className="mt-2 inline-flex items-center gap-1.5 bg-brand text-white text-xs font-bold px-3 py-1.5 rounded-lg"
-          >
-            <Download className="w-3.5 h-3.5" /> Install
-          </button>
-        )}
       </div>
-      <button onClick={dismiss} aria-label="Dismiss" className="p-1 text-text-secondary hover:text-text-primary">
-        <X className="w-4 h-4" />
+      {deferred && (
+        <button
+          onClick={async () => {
+            await deferred.prompt();
+            await deferred.userChoice.catch(() => undefined);
+            dismiss();
+          }}
+          className="btn btn-primary btn-sm"
+        >
+          Install
+        </button>
+      )}
+      <button onClick={dismiss} aria-label="Dismiss" className="btn btn-ghost btn-icon -mr-1 h-8 w-8">
+        <X className="h-4 w-4" />
       </button>
     </div>
   );

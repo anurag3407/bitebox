@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: ZomatoFresh Platform API
+  title: BiteBox Platform API
   description: High-performance versioned food delivery REST API conforming to plan.md specification.
   version: 1.0.0
 servers:

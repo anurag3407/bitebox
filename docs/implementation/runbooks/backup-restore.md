@@ -6,16 +6,16 @@
 ## 2. Safe Immediate Action
 - Put the entire platform into **Quarantine Maintenance Mode** (`MAINTENANCE_MODE=true`).
 - Terminate all active web and worker containers to prevent conflicting writes during restore.
-- Obtain the latest verified backup file from `/var/backups/zomatofresh/` or cloud storage.
+- Obtain the latest verified backup file from `/var/backups/bitebox/` or cloud storage.
 - Execute restoration into an **isolated quarantine database** first (`infra/scripts/restore.sh`).
 
 ## 3. Commands / Dashboard References
 ```bash
 # 1. Stop background workers and web servers
-docker compose -f /opt/zomatofresh/infra/compose/docker-compose.yml stop web worker
+docker compose -f /opt/bitebox/infra/compose/docker-compose.yml stop web worker
 
 # 2. Restore backup into quarantine target database
-./infra/scripts/restore.sh /var/backups/zomatofresh/zomatofresh_db_LATEST.sql.gz "$RECOVERY_DB_URL"
+./infra/scripts/restore.sh /var/backups/bitebox/bitebox_db_LATEST.sql.gz "$RECOVERY_DB_URL"
 ```
 
 ## 4. Forbidden Actions

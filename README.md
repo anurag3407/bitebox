@@ -1,4 +1,4 @@
-# ZomatoFresh — Food Delivery PWA
+# BiteBox — Food Delivery PWA
 
 ## Quickstart (local)
 

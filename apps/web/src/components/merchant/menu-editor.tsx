@@ -2,13 +2,20 @@
 
 import React, { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Eye, EyeOff, Pencil, Plus, Trash2 } from "lucide-react";
+import { Eye, EyeOff, Pencil, Plus, Trash2, UtensilsCrossed } from "lucide-react";
 import type { EditableMenuItem } from "@startup/api-client";
-import { SafeImage, Spinner, VegMark } from "@/components/ui/misc";
+import { Toggle } from "@/components/ui/field";
+import { ActionDialog } from "@/components/ui/modal";
+import { EmptyState, PageSpinner, SafeImage, VegMark } from "@/components/ui/misc";
 import { useToast } from "@/components/ui/toast";
 import { errorMessage, useApi } from "@/lib/api";
 import { formatRupees } from "@/lib/format";
 import { ItemEditor } from "./item-editor";
+
+type Pending =
+  | { kind: "rename-category"; id: string; name: string }
+  | { kind: "delete-category"; id: string; name: string }
+  | { kind: "delete-item"; id: string; name: string };
 
 /** Catalogue management. Kitchen staff only get stock toggles; editors get the full editor. */
 export function MenuEditor({ restaurantId, canEdit }: { restaurantId: string; canEdit: boolean }) {
@@ -18,6 +25,7 @@ export function MenuEditor({ restaurantId, canEdit }: { restaurantId: string; ca
   const menu = useQuery({ queryKey: ["editable-menu", restaurantId], queryFn: () => api.getEditableMenu(restaurantId) });
   const [editing, setEditing] = useState<{ item?: EditableMenuItem; categoryId: string } | null>(null);
   const [newCategory, setNewCategory] = useState("");
+  const [pending, setPending] = useState<Pending | null>(null);
 
   const run = async (fn: () => Promise<unknown>, ok?: string) => {
     try {
@@ -30,11 +38,11 @@ export function MenuEditor({ restaurantId, canEdit }: { restaurantId: string; ca
     }
   };
 
-  if (menu.isPending) return <Spinner />;
-  if (!menu.data) return <p className="text-sm text-red-700">{errorMessage(menu.error)}</p>;
+  if (menu.isPending) return <PageSpinner />;
+  if (!menu.data) return <p className="notice notice-danger">{errorMessage(menu.error)}</p>;
 
   return (
-    <div className="space-y-6">
+    <div className="max-w-4xl space-y-14">
       {canEdit && (
         <form
           onSubmit={(e) => {
@@ -45,84 +53,87 @@ export function MenuEditor({ restaurantId, canEdit }: { restaurantId: string; ca
           }}
           className="flex gap-2"
         >
-          <input value={newCategory} onChange={(e) => setNewCategory(e.target.value)} placeholder="New category, e.g. Desserts" maxLength={60} className="flex-1 p-2.5 rounded-xl border border-border text-sm" />
-          <button className="px-4 py-2.5 rounded-xl bg-text-primary text-white text-sm font-bold">Add category</button>
+          <input value={newCategory} onChange={(e) => setNewCategory(e.target.value)} placeholder="New category, e.g. Desserts" aria-label="New category name" maxLength={60} className="input min-w-0 flex-1" />
+          <button disabled={!newCategory.trim()} className="btn btn-primary h-12">
+            <Plus className="h-4 w-4" /> Add
+          </button>
         </form>
       )}
 
-      {menu.data.categories.length === 0 && <p className="text-sm text-text-secondary">Add a category, then your dishes. Customers can order once you resume accepting orders.</p>}
+      {menu.data.categories.length === 0 && (
+        <EmptyState icon={<UtensilsCrossed />} title="Your menu is empty" body="Add a category, then your dishes. Customers can order once you resume accepting orders." />
+      )}
 
       {menu.data.categories.map((cat) => (
-        <section key={cat.id} className={!cat.isActive ? "opacity-60" : ""}>
-          <div className="flex items-center justify-between mb-2 gap-2">
-            <h3 className="font-bold">
-              {cat.name} <span className="text-text-secondary font-normal text-xs">({cat.items.length})</span>
+        <section key={cat.id}>
+          <div className="flex items-center justify-between gap-3 border-b border-line pb-3">
+            <h3 className={`flex items-center gap-2 text-base font-semibold ${cat.isActive ? "text-ink" : "text-ink-muted"}`}>
+              {cat.name}
+              <span className="text-sm font-normal text-ink-muted tabular">{cat.items.length}</span>
+              {!cat.isActive && <span className="badge badge-neutral">Hidden</span>}
             </h3>
             {canEdit && (
-              <div className="flex items-center gap-1">
-                <button aria-label={cat.isActive ? "Hide category" : "Show category"} onClick={() => run(() => api.updateMenuCategory(restaurantId, cat.id, { isActive: !cat.isActive }))} className="p-2 text-text-secondary">
-                  {cat.isActive ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+              <div className="flex items-center">
+                <button
+                  aria-label={cat.isActive ? "Hide category" : "Show category"}
+                  title={cat.isActive ? "Hide from customers" : "Show to customers"}
+                  onClick={() => run(() => api.updateMenuCategory(restaurantId, cat.id, { isActive: !cat.isActive }))}
+                  className="btn btn-ghost btn-icon h-9 w-9"
+                >
+                  {cat.isActive ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+                </button>
+                <button aria-label="Rename category" onClick={() => setPending({ kind: "rename-category", id: cat.id, name: cat.name })} className="btn btn-ghost btn-icon h-9 w-9">
+                  <Pencil className="h-4 w-4" />
                 </button>
                 <button
-                  aria-label="Rename category"
-                  onClick={() => {
-                    const name = prompt("Category name", cat.name)?.trim();
-                    if (name) run(() => api.updateMenuCategory(restaurantId, cat.id, { name }));
-                  }}
-                  className="p-2 text-text-secondary"
+                  aria-label="Delete category"
+                  title={cat.items.length ? "Move or delete its dishes first" : "Delete category"}
+                  disabled={cat.items.length > 0}
+                  onClick={() => setPending({ kind: "delete-category", id: cat.id, name: cat.name })}
+                  className="btn btn-ghost btn-icon h-9 w-9"
                 >
-                  <Pencil className="w-4 h-4" />
+                  <Trash2 className="h-4 w-4" />
                 </button>
-                <button aria-label="Delete category" onClick={() => run(() => api.deleteMenuCategory(restaurantId, cat.id), "Category deleted")} className="p-2 text-text-secondary">
-                  <Trash2 className="w-4 h-4" />
-                </button>
-                <button onClick={() => setEditing({ categoryId: cat.id })} className="ml-1 px-3 py-1.5 rounded-lg bg-brand text-white text-xs font-bold flex items-center gap-1">
-                  <Plus className="w-3 h-3" /> Dish
+                <button onClick={() => setEditing({ categoryId: cat.id })} className="btn btn-outline btn-sm ml-2">
+                  <Plus className="h-3.5 w-3.5" /> Dish
                 </button>
               </div>
             )}
           </div>
-          <ul className="divide-y divide-border rounded-2xl border border-border bg-white">
+          <ul className={`rows ${!cat.isActive ? "opacity-60" : ""}`}>
             {cat.items.map((item) => (
-              <li key={item.id} className="p-3 flex items-center gap-3">
-                <SafeImage src={item.imageUrl ?? undefined} alt="" className="w-12 h-12 rounded-lg object-cover shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold flex items-center gap-1.5">
+              <li key={item.id} className="flex items-center gap-4 py-4">
+                <SafeImage src={item.imageUrl ?? undefined} alt="" className="h-14 w-14 shrink-0 rounded-2xl object-cover" />
+                <div className="min-w-0 flex-1">
+                  <p className="flex items-center gap-2 text-[15px] font-medium text-ink">
                     <VegMark tag={item.dietaryTag} /> <span className="truncate">{item.name}</span>
                   </p>
-                  <p className="text-xs text-text-secondary">
-                    {formatRupees(item.pricePaise)}
+                  <p className="mt-0.5 text-sm text-ink-muted">
+                    <span className="tabular">{formatRupees(item.pricePaise)}</span>
                     {(item.variants?.length ?? 0) > 0 && ` · ${item.variants!.length} portions`}
                     {(item.modifierGroups?.length ?? 0) > 0 && ` · ${item.modifierGroups!.length} add-on groups`}
                   </p>
                 </div>
-                <label className="flex items-center gap-1.5 text-[11px] font-semibold cursor-pointer">
-                  {item.isAvailable ? "In stock" : "Sold out"}
-                  <input
-                    type="checkbox"
-                    role="switch"
-                    checked={item.isAvailable !== false}
-                    onChange={(e) => run(() => api.merchantSetItemAvailability(restaurantId, item.id, e.target.checked))}
-                    className="w-5 h-5 accent-[#24963F]"
-                  />
-                </label>
+                <span className={`hidden text-sm sm:inline ${item.isAvailable !== false ? "text-ink-muted" : "text-danger"}`}>{item.isAvailable !== false ? "In stock" : "Sold out"}</span>
+                <Toggle
+                  size="sm"
+                  label={`${item.name} in stock`}
+                  checked={item.isAvailable !== false}
+                  onChange={(next) => run(() => api.merchantSetItemAvailability(restaurantId, item.id, next))}
+                />
                 {canEdit && (
-                  <>
-                    <button aria-label={`Edit ${item.name}`} onClick={() => setEditing({ item, categoryId: cat.id })} className="p-2 text-text-secondary">
-                      <Pencil className="w-4 h-4" />
+                  <div className="flex">
+                    <button aria-label={`Edit ${item.name}`} onClick={() => setEditing({ item, categoryId: cat.id })} className="btn btn-ghost btn-icon h-9 w-9">
+                      <Pencil className="h-4 w-4" />
                     </button>
-                    <button
-                      aria-label={`Delete ${item.name}`}
-                      onClick={() => confirm(`Remove "${item.name}" from the menu?`) && run(() => api.deleteMenuItem(restaurantId, item.id), "Dish removed")}
-                      className="p-2 text-text-secondary"
-                    >
-                      <Trash2 className="w-4 h-4" />
+                    <button aria-label={`Delete ${item.name}`} onClick={() => setPending({ kind: "delete-item", id: item.id, name: item.name })} className="btn btn-ghost btn-icon h-9 w-9">
+                      <Trash2 className="h-4 w-4" />
                     </button>
-                  </>
+                  </div>
                 )}
               </li>
             ))}
-            {cat.items.length === 0 && <li className="p-3 text-xs text-text-secondary">No dishes yet</li>}
+            {cat.items.length === 0 && <li className="py-6 text-sm text-ink-muted">No dishes yet</li>}
           </ul>
         </section>
       ))}
@@ -137,6 +148,33 @@ export function MenuEditor({ restaurantId, canEdit }: { restaurantId: string; ca
           onSaved={() => queryClient.invalidateQueries({ queryKey: ["editable-menu", restaurantId] })}
         />
       )}
+
+      <ActionDialog
+        open={pending?.kind === "rename-category"}
+        onClose={() => setPending(null)}
+        title="Rename category"
+        confirmLabel="Save"
+        input={{ label: "Category name", initialValue: pending?.name }}
+        onConfirm={(name) => run(() => api.updateMenuCategory(restaurantId, pending!.id, { name }), "Category renamed")}
+      />
+      <ActionDialog
+        open={pending?.kind === "delete-category"}
+        onClose={() => setPending(null)}
+        title={`Delete “${pending?.name}”?`}
+        description="The category is removed from your menu."
+        confirmLabel="Delete"
+        tone="danger"
+        onConfirm={() => run(() => api.deleteMenuCategory(restaurantId, pending!.id), "Category deleted")}
+      />
+      <ActionDialog
+        open={pending?.kind === "delete-item"}
+        onClose={() => setPending(null)}
+        title={`Remove “${pending?.name}”?`}
+        description="Customers will no longer see this dish."
+        confirmLabel="Remove"
+        tone="danger"
+        onConfirm={() => run(() => api.deleteMenuItem(restaurantId, pending!.id), "Dish removed")}
+      />
     </div>
   );
 }

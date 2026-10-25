@@ -43,6 +43,10 @@ describe("Database Integration Tests", () => {
     // The newly created one is default, previous should not be default
     const defaultAddr = addresses.find((a) => a.isDefault);
     expect(defaultAddr?.id).toBe(newAddress.id);
+
+    // Leave the fixture customer as seeded so repeated runs don't hit the address cap
+    await AddressRepository.delete(SEED_IDS.customerUserId, newAddress.id);
+    await AddressRepository.setDefault(SEED_IDS.customerUserId, SEED_IDS.customerAddressId);
   });
 
   it("creates order idempotently and prevents duplicate orders", async () => {

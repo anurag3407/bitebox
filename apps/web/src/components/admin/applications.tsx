@@ -2,10 +2,22 @@
 
 import React, { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Spinner } from "@/components/ui/misc";
+import { MapPin } from "lucide-react";
+import { EmptyState, PageSpinner } from "@/components/ui/misc";
 import { useToast } from "@/components/ui/toast";
 import { errorMessage, useApi } from "@/lib/api";
-import { timeAgo } from "@/lib/format";
+import { formatRupees, timeAgo } from "@/lib/format";
+
+const STATUSES = [
+  ["SUBMITTED", "To review"],
+  ["APPROVED", "Approved"],
+  ["REJECTED", "Rejected"],
+] as const;
+
+function humanise(key: string): string {
+  const words = key.replace(/([A-Z])/g, " $1").toLowerCase().trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
 
 export function ApplicationsTab() {
   const api = useApi();
@@ -13,72 +25,83 @@ export function ApplicationsTab() {
   const [status, setStatus] = useState<"SUBMITTED" | "APPROVED" | "REJECTED">("SUBMITTED");
   const apps = useQuery({ queryKey: ["admin-applications", status], queryFn: () => api.getApplications(status) });
   const [notes, setNotes] = useState<Record<string, string>>({});
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   return (
-    <div className="space-y-4">
+    <div className="max-w-4xl space-y-8">
       <div className="flex gap-2">
-        {(["SUBMITTED", "APPROVED", "REJECTED"] as const).map((s) => (
-          <button key={s} onClick={() => setStatus(s)} className={`px-3 py-1.5 rounded-full text-xs font-bold border ${status === s ? "bg-text-primary text-white" : "border-border"}`}>
-            {s === "SUBMITTED" ? "To review" : s.toLowerCase()}
+        {STATUSES.map(([s, label]) => (
+          <button key={s} aria-pressed={status === s} onClick={() => setStatus(s)} className="chip">
+            {label}
           </button>
         ))}
       </div>
-      {apps.isPending && <Spinner />}
-      {apps.data?.length === 0 && <p className="text-sm text-text-secondary">Nothing here.</p>}
+      {apps.isPending && <PageSpinner />}
+      {apps.data?.length === 0 && <EmptyState title="Nothing here" body={status === "SUBMITTED" ? "No applications are waiting for review." : undefined} />}
       {apps.data?.map((a) => (
-        <article key={a.id} className="p-4 rounded-2xl border border-border bg-white space-y-2 text-sm">
-          <div className="flex justify-between gap-2">
-            <p className="font-bold">
-              {a.type === "MERCHANT" ? `Restaurant: ${a.details.restaurantName}` : `Rider: ${a.details.fullName}`}
-            </p>
-            <span className="text-xs text-text-secondary">{timeAgo(a.createdAt)}</span>
+        <article key={a.id} className="card space-y-6 p-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-base font-semibold text-ink">{a.type === "MERCHANT" ? a.details.restaurantName : a.details.fullName}</p>
+              <p className="mt-0.5 text-sm text-ink-muted">
+                {a.type === "MERCHANT" ? "Restaurant" : "Delivery partner"} · {a.applicantName} · {a.applicantEmail}
+              </p>
+            </div>
+            <span className="shrink-0 text-xs text-ink-muted">{timeAgo(a.createdAt)}</span>
           </div>
-          <p className="text-xs text-text-secondary">
-            Applicant {a.applicantName} · {a.applicantEmail}
-          </p>
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+          <dl className="grid grid-cols-1 gap-x-8 gap-y-3 text-sm sm:grid-cols-2">
             {Object.entries(a.details)
-              .filter(([k]) => !["location"].includes(k))
+              .filter(([k]) => k !== "location")
               .map(([k, v]) => (
-                <React.Fragment key={k}>
-                  <dt className="text-text-secondary">{k.replace(/([A-Z])/g, " $1").toLowerCase()}</dt>
-                  <dd className="font-medium break-all">{Array.isArray(v) ? v.join(", ") : typeof v === "number" && k.endsWith("Paise") ? `₹${v / 100}` : String(v)}</dd>
-                </React.Fragment>
+                <div key={k} className="min-w-0">
+                  <dt className="text-xs text-ink-muted">{humanise(k)}</dt>
+                  <dd className="mt-0.5 break-all text-ink">{Array.isArray(v) ? v.join(", ") : typeof v === "number" && k.endsWith("Paise") ? formatRupees(v) : String(v)}</dd>
+                </div>
               ))}
           </dl>
           {a.type === "MERCHANT" && a.details.location && (
-            <a className="text-xs text-brand underline" target="_blank" rel="noreferrer" href={`https://www.google.com/maps?q=${a.details.location.latitude},${a.details.location.longitude}`}>
-              View pinned location
+            <a
+              className="btn btn-outline btn-sm"
+              target="_blank"
+              rel="noreferrer"
+              href={`https://www.google.com/maps?q=${a.details.location.latitude},${a.details.location.longitude}`}
+            >
+              <MapPin className="h-3.5 w-3.5" /> View pinned location
             </a>
           )}
           {a.status === "SUBMITTED" ? (
-            <div className="flex flex-wrap gap-2 pt-1">
+            <div className="flex flex-wrap gap-2 border-t border-line pt-6">
               <input
-                placeholder="Note (e.g. FSSAI verified on portal)"
+                placeholder="Note, e.g. FSSAI verified on portal"
+                aria-label="Review note"
                 value={notes[a.id] ?? ""}
                 onChange={(e) => setNotes({ ...notes, [a.id]: e.target.value })}
-                className="flex-1 min-w-[200px] p-2 rounded-xl border border-border text-xs"
+                className="input h-11 min-w-[220px] flex-1"
               />
               {(["REJECT", "APPROVE"] as const).map((d) => (
                 <button
                   key={d}
+                  disabled={busyId === a.id}
                   onClick={async () => {
+                    setBusyId(a.id);
                     try {
                       await api.reviewApplication(a.id, d, notes[a.id]);
                       toast(d === "APPROVE" ? "Partner approved and provisioned" : "Application rejected", "success");
                       apps.refetch();
                     } catch (err) {
                       toast(errorMessage(err), "error");
+                    } finally {
+                      setBusyId(null);
                     }
                   }}
-                  className={`px-3 py-2 rounded-xl text-xs font-bold ${d === "APPROVE" ? "bg-success text-white" : "border border-red-200 text-red-700"}`}
+                  className={`btn ${d === "APPROVE" ? "btn-success" : "btn-danger-ghost"}`}
                 >
                   {d === "APPROVE" ? "Approve" : "Reject"}
                 </button>
               ))}
             </div>
           ) : (
-            a.reviewNote && <p className="text-xs">Note: {a.reviewNote}</p>
+            a.reviewNote && <p className="notice notice-neutral">Note: {a.reviewNote}</p>
           )}
         </article>
       ))}

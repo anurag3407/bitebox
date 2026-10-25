@@ -1,16 +1,16 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { Star, Clock, MapPin, Sparkles, Search, AlertCircle, Share2, Award } from "lucide-react";
+import { ArrowLeft, MapPin, Minus, Plus, Search, Share2, Star } from "lucide-react";
 import { MenuItemDto, RestaurantDetailDto } from "@startup/contracts";
 import { AddItemInput, useCartStore } from "@/features/cart/cart-store";
 import { useLocationStore } from "@/features/location/location-store";
 import { ItemCustomizerModal } from "@/components/menu/ItemCustomizerModal";
 import { Modal } from "@/components/ui/modal";
-import { SafeImage, VegMark } from "@/components/ui/misc";
+import { EmptyState, SafeImage, VegMark } from "@/components/ui/misc";
 import { useToast } from "@/components/ui/toast";
 import { ApiError, useApi } from "@/lib/api";
 import { formatRupees, timeAgo } from "@/lib/format";
@@ -52,34 +52,33 @@ function QuantityControl({
   };
 
   if (disabled) {
-    return <span className="text-[11px] font-bold text-text-secondary bg-surface-muted px-3 py-2 rounded-lg">{item.isAvailable ? "Unavailable" : "Sold out"}</span>;
+    return <span className="inline-flex h-9 items-center rounded-full bg-white px-4 text-xs font-medium text-ink-muted shadow-soft">{item.isAvailable ? "Unavailable" : "Sold out"}</span>;
   }
 
   if (quantity > 0 && (simpleLine || isCustomisable)) {
     return (
-      <div className="flex items-center bg-white border border-brand/40 rounded-lg shadow-sm text-brand font-black">
+      <div className="stepper shadow-soft">
         <button
           aria-label={`Remove one ${item.name}`}
-          className="px-3 py-1.5"
           onClick={() => {
             // Customised dishes are edited from the cart, where each variant is its own line
             if (simpleLine) cart.updateQuantity(simpleLine.lineId, simpleLine.quantity - 1);
             else toast("Edit customised items from your cart");
           }}
         >
-          −
+          <Minus className="h-4 w-4" />
         </button>
-        <span className="px-1 text-sm min-w-5 text-center">{quantity}</span>
-        <button aria-label={`Add one ${item.name}`} className="px-3 py-1.5" onClick={add}>
-          +
+        <span className="min-w-6 text-center tabular">{quantity}</span>
+        <button aria-label={`Add one ${item.name}`} onClick={add}>
+          <Plus className="h-4 w-4" />
         </button>
       </div>
     );
   }
 
   return (
-    <button onClick={add} className="px-6 py-1.5 bg-white border border-brand/40 text-brand font-black text-sm rounded-lg shadow-sm hover:bg-brand-light">
-      ADD
+    <button onClick={add} className="btn btn-sm border border-line bg-white px-6 text-ink shadow-soft hover:border-ink">
+      Add
     </button>
   );
 }
@@ -96,6 +95,7 @@ export default function RestaurantMenuPage() {
   const [bestsellersOnly, setBestsellersOnly] = useState(false);
   const [customizingItem, setCustomizingItem] = useState<MenuItemDto | null>(null);
   const [conflict, setConflict] = useState<{ pending: AddItemInput; other: string } | null>(null);
+  const [activeCategory, setActiveCategory] = useState<string | null>(null);
 
   const restaurantQuery = useQuery({ queryKey: ["restaurant", slug], queryFn: () => api.getRestaurantBySlug(slug) });
   const restaurant = restaurantQuery.data;
@@ -122,12 +122,30 @@ export default function RestaurantMenuPage() {
       .filter((cat) => cat.items.length > 0);
   }, [restaurant, menuSearch, vegOnly, bestsellersOnly]);
 
+  // Highlight the category currently in view
+  useEffect(() => {
+    if (categories.length === 0) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries.filter((e) => e.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+        if (visible) setActiveCategory(visible.target.id.replace(/^cat-/, ""));
+      },
+      { rootMargin: "-160px 0px -60% 0px" }
+    );
+    for (const cat of categories) {
+      const el = document.getElementById(`cat-${cat.id}`);
+      if (el) observer.observe(el);
+    }
+    return () => observer.disconnect();
+  }, [categories]);
+
   if (restaurantQuery.isPending) {
     return (
-      <div className="max-w-5xl mx-auto px-4 py-8 animate-pulse space-y-4">
-        <div className="h-48 bg-surface-muted rounded-3xl" />
+      <div className="page space-y-8 py-10">
+        <div className="skeleton aspect-[16/9] sm:aspect-[21/8]" />
+        <div className="h-8 w-1/3 animate-pulse rounded-full bg-subtle" />
         {[1, 2, 3].map((i) => (
-          <div key={i} className="h-28 bg-surface-muted rounded-2xl" />
+          <div key={i} className="skeleton h-28" />
         ))}
       </div>
     );
@@ -136,13 +154,15 @@ export default function RestaurantMenuPage() {
   if (!restaurant) {
     const notFound = restaurantQuery.error instanceof ApiError && restaurantQuery.error.status === 404;
     return (
-      <div className="max-w-md mx-auto my-20 p-8 text-center bg-surface-muted rounded-3xl border border-border">
-        <AlertCircle className="w-12 h-12 text-brand mx-auto mb-3" />
-        <h1 className="text-xl font-bold">{notFound ? "Restaurant not found" : "Couldn't load the menu"}</h1>
-        <button onClick={() => (notFound ? router.push("/") : restaurantQuery.refetch())} className="mt-6 px-5 py-2.5 bg-brand text-white text-xs font-bold rounded-xl">
-          {notFound ? "Back to restaurants" : "Retry"}
-        </button>
-      </div>
+      <EmptyState
+        title={notFound ? "We couldn't find that restaurant" : "Couldn't load the menu"}
+        body={notFound ? "It may have moved or closed." : "Check your connection and try again."}
+        action={
+          <button onClick={() => (notFound ? router.push("/") : restaurantQuery.refetch())} className="btn btn-primary">
+            {notFound ? "Browse restaurants" : "Try again"}
+          </button>
+        }
+      />
     );
   }
 
@@ -159,169 +179,184 @@ export default function RestaurantMenuPage() {
       // user cancelled the share sheet
     }
   };
+  const jumpTo = (id: string) => document.getElementById(`cat-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const eta = serviceability.data?.estimatedDeliveryMinutes
+    ? `${serviceability.data.estimatedDeliveryMinutes} min`
+    : `${restaurant.deliveryTimeMinMinutes}–${restaurant.deliveryTimeMaxMinutes} min`;
 
   return (
-    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 pb-28">
-      <div className="relative rounded-3xl overflow-hidden mb-4 aspect-[3/1] bg-surface-muted">
-        <SafeImage src={restaurant.heroImageUrl} alt={restaurant.name} className="w-full h-full object-cover" />
+    <div className="page pb-16 pt-6 sm:pt-8">
+      <div className="mb-6 flex items-center justify-between">
+        <Link href="/" className="btn btn-ghost btn-sm -ml-4 gap-1.5">
+          <ArrowLeft className="h-4 w-4" /> All restaurants
+        </Link>
+        <button onClick={share} aria-label="Share restaurant" className="btn btn-ghost btn-icon -mr-2">
+          <Share2 className="h-[18px] w-[18px]" />
+        </button>
       </div>
 
-      <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-4">
-        <div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <h1 className="text-2xl sm:text-3xl font-black text-text-primary tracking-tight">{restaurant.name}</h1>
-            {restaurant.pureVeg && <span className="text-[10px] font-bold text-success bg-success-light px-2.5 py-0.5 rounded-full border border-success/30">PURE VEG</span>}
-          </div>
-          <p className="text-sm text-text-secondary">{restaurant.cuisines.join(", ")}</p>
-          <p className="text-xs text-text-secondary flex items-center gap-1 mt-1">
-            <MapPin className="w-3.5 h-3.5" /> {restaurant.addressText}
+      <div className="aspect-[16/9] overflow-hidden rounded-3xl bg-subtle sm:aspect-[21/8]">
+        <SafeImage src={restaurant.heroImageUrl} alt={restaurant.name} className="h-full w-full object-cover" />
+      </div>
+
+      <header className="mt-8 flex flex-col gap-6 sm:mt-10 md:flex-row md:items-end md:justify-between">
+        <div className="min-w-0">
+          <h1 className="h-page">{restaurant.name}</h1>
+          <p className="mt-2 text-base text-ink-muted">
+            {restaurant.pureVeg && <span className="text-success">Pure veg · </span>}
+            {restaurant.cuisines.join(", ")}
           </p>
-          {restaurant.offerTag && (
-            <div className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 bg-brand-light text-brand rounded-lg text-xs font-bold">
-              <Sparkles className="w-3.5 h-3.5" /> {restaurant.offerTag}
-            </div>
-          )}
+          <p className="mt-1.5 flex items-center gap-1.5 text-sm text-ink-muted">
+            <MapPin className="h-4 w-4 shrink-0" /> <span className="truncate">{restaurant.addressText}</span>
+          </p>
         </div>
-        <div className="flex items-center gap-4">
-          <div className="text-center">
-            <div className="inline-flex items-center gap-1 bg-success text-white px-2 py-0.5 rounded-md text-sm font-black">
-              {restaurant.rating.toFixed(1)} <Star className="w-3 h-3 fill-white" />
-            </div>
-            <p className="text-[10px] text-text-secondary mt-1">{restaurant.ratingCount.toLocaleString("en-IN")} ratings</p>
+        <dl className="flex shrink-0 gap-8 sm:gap-10">
+          <div>
+            <dt className="text-xs text-ink-muted">Rating</dt>
+            <dd className="mt-1 flex items-center gap-1 text-lg font-semibold text-ink tabular">
+              <Star className="h-4 w-4 fill-ink" /> {restaurant.rating.toFixed(1)}
+              <span className="text-xs font-normal text-ink-muted">({restaurant.ratingCount.toLocaleString("en-IN")})</span>
+            </dd>
           </div>
-          <div className="text-center">
-            <p className="flex items-center gap-1 text-sm font-bold">
-              <Clock className="w-4 h-4 text-brand" />
-              {serviceability.data?.estimatedDeliveryMinutes
-                ? `${serviceability.data.estimatedDeliveryMinutes} min`
-                : `${restaurant.deliveryTimeMinMinutes}-${restaurant.deliveryTimeMaxMinutes} min`}
-            </p>
-            <p className="text-[10px] text-text-secondary">Delivery time</p>
+          <div>
+            <dt className="text-xs text-ink-muted">Delivery</dt>
+            <dd className="mt-1 text-lg font-semibold text-ink tabular">{eta}</dd>
           </div>
-          <button onClick={share} aria-label="Share restaurant" className="p-2 rounded-full border border-border hover:bg-surface-muted">
-            <Share2 className="w-4 h-4" />
-          </button>
-        </div>
+          <div>
+            <dt className="text-xs text-ink-muted">For one</dt>
+            <dd className="mt-1 text-lg font-semibold text-ink tabular">{formatRupees(restaurant.avgPriceForOnePaise)}</dd>
+          </div>
+        </dl>
+      </header>
+
+      <div className="mt-6 space-y-3">
+        {restaurant.offerTag && <p className="notice bg-accent-soft font-medium text-accent">{restaurant.offerTag}</p>}
+        {!restaurant.isAcceptingOrders && (
+          <p className="notice notice-warn">{restaurant.isOpen ? "This restaurant isn't taking orders right now." : `Closed. ${restaurant.nextOpenText ?? ""}`}</p>
+        )}
+        {location && serviceability.data && !deliversHere && (
+          <p className="notice notice-danger">{serviceability.data.reason ?? "This restaurant doesn't deliver to your selected location."}</p>
+        )}
       </div>
 
-      {!restaurant.isAcceptingOrders && (
-        <div className="mb-4 p-3 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-sm font-semibold">
-          {restaurant.isOpen ? "This restaurant is not accepting orders right now." : `This restaurant is closed. ${restaurant.nextOpenText ?? ""}`}
-        </div>
-      )}
-      {location && serviceability.data && !deliversHere && (
-        <div className="mb-4 p-3 rounded-2xl bg-red-50 border border-red-200 text-red-800 text-sm font-semibold">
-          {serviceability.data.reason ?? "This restaurant does not deliver to your selected location."}
-        </div>
-      )}
-
-      <div className="sticky top-16 z-20 bg-white py-3 -mx-4 px-4 sm:mx-0 sm:px-0 border-b border-border space-y-3">
+      {/* Toolbar */}
+      <div className="sticky top-[calc(4rem+env(safe-area-inset-top))] z-20 -mx-5 mt-10 border-b border-line bg-white/95 px-5 pt-4 backdrop-blur-xl sm:top-[calc(72px+env(safe-area-inset-top))] sm:mx-0 sm:px-0">
         <div className="flex items-center gap-2">
-          <div className="relative flex-1">
-            <Search className="w-4 h-4 text-text-secondary absolute left-3 top-2.5" />
+          <div className="relative flex-1 sm:max-w-sm">
+            <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-muted" />
             <input
               type="search"
               value={menuSearch}
               onChange={(e) => setMenuSearch(e.target.value)}
-              placeholder="Search in menu"
-              aria-label="Search in menu"
-              className="w-full pl-9 pr-3 py-2 bg-surface-muted border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand/20"
+              placeholder="Search the menu"
+              aria-label="Search the menu"
+              className="h-10 w-full rounded-full bg-subtle pl-10 pr-4 text-sm text-ink outline-none placeholder:text-ink-muted focus:bg-white focus:ring-1 focus:ring-line-strong"
             />
           </div>
-          <button
-            onClick={() => setVegOnly(!vegOnly)}
-            aria-pressed={vegOnly}
-            className={`px-3 py-2 rounded-xl border text-xs font-semibold flex items-center gap-1.5 ${vegOnly ? "bg-success-light text-success border-success" : "border-border"}`}
-          >
-            <VegMark tag="VEG" /> Veg
+          <button onClick={() => setVegOnly(!vegOnly)} aria-pressed={vegOnly} className="chip">
+            Veg
           </button>
-          <button
-            onClick={() => setBestsellersOnly(!bestsellersOnly)}
-            aria-pressed={bestsellersOnly}
-            className={`px-3 py-2 rounded-xl border text-xs font-semibold flex items-center gap-1 ${bestsellersOnly ? "bg-brand-light text-brand border-brand" : "border-border"}`}
-          >
-            <Award className="w-3.5 h-3.5" /> Bestseller
+          <button onClick={() => setBestsellersOnly(!bestsellersOnly)} aria-pressed={bestsellersOnly} className="chip">
+            Bestsellers
           </button>
         </div>
-        <nav className="flex gap-2 overflow-x-auto" aria-label="Menu categories">
+        <nav className="no-scrollbar mt-3 flex gap-6 overflow-x-auto lg:hidden" aria-label="Menu categories">
           {categories.map((cat) => (
-            <a
+            <button
               key={cat.id}
-              href={`#cat-${cat.id}`}
-              onClick={(e) => {
-                e.preventDefault();
-                document.getElementById(`cat-${cat.id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
-              }}
-              className="shrink-0 px-3 py-1.5 rounded-full bg-surface-muted text-xs font-semibold hover:bg-brand-light hover:text-brand"
+              onClick={() => jumpTo(cat.id)}
+              className={`-mb-px shrink-0 border-b-2 pb-3 text-sm transition-colors ${activeCategory === cat.id ? "border-ink font-medium text-ink" : "border-transparent text-ink-muted"}`}
             >
-              {cat.name} ({cat.items.length})
-            </a>
+              {cat.name}
+            </button>
           ))}
         </nav>
+        <div className="hidden h-4 lg:block" />
       </div>
 
-      <div className="space-y-10 mt-6">
-        {categories.length === 0 && <p className="text-center text-sm text-text-secondary py-10">No dishes match your filters.</p>}
-        {categories.map((cat) => (
-          <section key={cat.id} id={`cat-${cat.id}`} className="scroll-mt-40">
-            <h2 className="text-lg font-black text-text-primary mb-2">{cat.name}</h2>
-            <ul className="divide-y divide-border">
-              {cat.items.map((item) => (
-                <li key={item.id} className={`py-5 flex gap-4 ${!item.isAvailable ? "opacity-60" : ""}`}>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <VegMark tag={item.dietaryTag} />
-                      {item.isBestseller && <span className="text-[10px] font-black text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded">BESTSELLER</span>}
-                    </div>
-                    <h3 className="font-bold text-text-primary mt-1">{item.name}</h3>
-                    <p className="text-sm font-semibold text-text-primary">
-                      {item.variants.length > 0 ? `from ${formatRupees(Math.min(...item.variants.map((v) => v.pricePaise)))}` : formatRupees(item.pricePaise)}
-                    </p>
-                    {item.description && <p className="text-xs text-text-secondary mt-1 line-clamp-2">{item.description}</p>}
-                  </div>
-                  <div className="relative w-32 shrink-0 flex flex-col items-center">
-                    <SafeImage src={item.imageUrl} alt={item.name} className="w-32 h-28 rounded-xl object-cover" />
-                    <div className="-mt-5">
-                      <QuantityControl
-                        item={item}
-                        restaurant={restaurant}
-                        onCustomize={() => setCustomizingItem(item)}
-                        onConflict={(pending, other) => setConflict({ pending, other })}
-                      />
-                    </div>
-                    {(item.variants.length > 0 || item.modifierGroups.length > 0) && item.isAvailable && (
-                      <span className="text-[10px] text-text-secondary mt-1">customisable</span>
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </section>
-        ))}
-      </div>
-
-      {(reviews.data?.length ?? 0) > 0 && (
-        <section className="mt-12">
-          <h2 className="text-lg font-black mb-3">What people are saying</h2>
-          <ul className="space-y-3">
-            {reviews.data!.map((r) => (
-              <li key={r.id} className="p-4 rounded-2xl border border-border">
-                <div className="flex items-center gap-2 text-sm">
-                  <span className="inline-flex items-center gap-0.5 bg-success text-white px-1.5 rounded text-xs font-black">
-                    {r.foodRating} <Star className="w-3 h-3 fill-white" />
-                  </span>
-                  <span className="font-semibold">{r.customerName}</span>
-                  <span className="text-xs text-text-secondary">· {timeAgo(r.createdAt)}</span>
-                </div>
-                {r.comment && <p className="text-sm text-text-secondary mt-1.5">{r.comment}</p>}
-              </li>
+      <div className="mt-8 lg:grid lg:grid-cols-[200px_1fr] lg:gap-16">
+        <aside className="hidden lg:block">
+          <nav className="sticky top-[calc(72px+env(safe-area-inset-top)+6rem)] space-y-1" aria-label="Menu categories">
+            {categories.map((cat) => (
+              <button
+                key={cat.id}
+                onClick={() => jumpTo(cat.id)}
+                className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm transition-colors ${
+                  activeCategory === cat.id ? "bg-subtle font-medium text-ink" : "text-ink-muted hover:text-ink"
+                }`}
+              >
+                <span className="truncate">{cat.name}</span>
+                <span className="text-xs text-ink-muted tabular">{cat.items.length}</span>
+              </button>
             ))}
-          </ul>
-        </section>
-      )}
+          </nav>
+        </aside>
+
+        <div className="min-w-0 space-y-14">
+          {categories.length === 0 && <EmptyState title="No dishes match" body="Try a different search or turn off a filter." />}
+          {categories.map((cat) => (
+            <section key={cat.id} id={`cat-${cat.id}`} className="scroll-mt-48">
+              <h2 className="h-section">{cat.name}</h2>
+              <ul className="rows mt-2">
+                {cat.items.map((item) => {
+                  const customisable = item.variants.length > 0 || item.modifierGroups.length > 0;
+                  return (
+                    <li key={item.id} className={`flex gap-5 py-7 sm:gap-8 ${!item.isAvailable ? "opacity-50" : ""}`}>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <VegMark tag={item.dietaryTag} />
+                          {item.isBestseller && <span className="text-xs font-medium text-accent">Bestseller</span>}
+                        </div>
+                        <h3 className="mt-2 text-base font-semibold text-ink">{item.name}</h3>
+                        <p className="mt-1 text-[15px] text-ink tabular">
+                          {item.variants.length > 0 ? `from ${formatRupees(Math.min(...item.variants.map((v) => v.pricePaise)))}` : formatRupees(item.pricePaise)}
+                        </p>
+                        {item.description && <p className="mt-2 line-clamp-2 max-w-xl text-sm leading-relaxed text-ink-muted">{item.description}</p>}
+                      </div>
+                      <div className="flex w-28 shrink-0 flex-col items-center sm:w-36">
+                        <SafeImage src={item.imageUrl} alt={item.name} className="aspect-square w-full rounded-2xl object-cover" />
+                        <div className="-mt-5">
+                          <QuantityControl
+                            item={item}
+                            restaurant={restaurant}
+                            onCustomize={() => setCustomizingItem(item)}
+                            onConflict={(pending, other) => setConflict({ pending, other })}
+                          />
+                        </div>
+                        {customisable && item.isAvailable && <span className="mt-2 text-[11px] text-ink-muted">Customisable</span>}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          ))}
+
+          {(reviews.data?.length ?? 0) > 0 && (
+            <section className="border-t border-line pt-14">
+              <h2 className="h-section">What people are saying</h2>
+              <ul className="mt-6 grid gap-4 sm:grid-cols-2">
+                {reviews.data!.map((r) => (
+                  <li key={r.id} className="panel p-6">
+                    <div className="flex items-center justify-between gap-3 text-sm">
+                      <span className="font-medium text-ink">{r.customerName}</span>
+                      <span className="flex items-center gap-1 text-ink tabular">
+                        <Star className="h-3.5 w-3.5 fill-ink" /> {r.foodRating}
+                      </span>
+                    </div>
+                    {r.comment && <p className="mt-3 text-sm leading-relaxed text-ink-soft">{r.comment}</p>}
+                    <p className="mt-3 text-xs text-ink-muted">{timeAgo(r.createdAt)}</p>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+        </div>
+      </div>
 
       {customizingItem && (
         <ItemCustomizerModal
+          key={customizingItem.id}
           item={customizingItem}
           isOpen
           onClose={() => setCustomizingItem(null)}
@@ -353,33 +388,24 @@ export default function RestaurantMenuPage() {
         onClose={() => setConflict(null)}
         size="sm"
         title="Start a new cart?"
+        description={`Your cart has items from ${conflict?.other}. Starting a new cart removes them so you can order from ${restaurant.name}.`}
         footer={
           <div className="flex gap-3">
-            <button onClick={() => setConflict(null)} className="flex-1 py-2.5 rounded-xl border border-border text-sm font-bold">
-              Keep current
+            <button onClick={() => setConflict(null)} className="btn btn-secondary flex-1">
+              Keep cart
             </button>
             <button
               onClick={() => {
                 if (conflict) cart.replaceWith([conflict.pending]);
                 setConflict(null);
               }}
-              className="flex-1 py-2.5 rounded-xl bg-brand text-white text-sm font-bold"
+              className="btn btn-primary flex-1"
             >
               Start new cart
             </button>
           </div>
         }
-      >
-        <p className="text-sm text-text-secondary">
-          Your cart has items from <b>{conflict?.other}</b>. Starting a new cart will remove them so you can order from <b>{restaurant.name}</b>.
-        </p>
-      </Modal>
-
-      <p className="text-center mt-10 text-xs text-text-secondary">
-        <Link href="/" className="underline">
-          Browse more restaurants
-        </Link>
-      </p>
+      />
     </div>
   );
 }

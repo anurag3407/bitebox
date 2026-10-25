@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BACKUP_DIR="${BACKUP_DIR:-/var/backups/zomatofresh}"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/bitebox}"
 TIMESTAMP="$(date -u +"%Y%m%d_%H%M%SZ")"
-BACKUP_FILE="${BACKUP_DIR}/zomatofresh_db_${TIMESTAMP}.sql.gz"
-METADATA_FILE="${BACKUP_DIR}/zomatofresh_db_${TIMESTAMP}.meta.json"
+BACKUP_FILE="${BACKUP_DIR}/bitebox_db_${TIMESTAMP}.sql.gz"
+METADATA_FILE="${BACKUP_DIR}/bitebox_db_${TIMESTAMP}.meta.json"
 
 mkdir -p "$BACKUP_DIR"
 
@@ -31,7 +31,7 @@ cat <<EOF > "$METADATA_FILE"
 EOF
 
 echo "[3/3] Pruning backups older than 14 days..."
-find "$BACKUP_DIR" -name "zomatofresh_db_*.sql.gz" -mtime +14 -delete
-find "$BACKUP_DIR" -name "zomatofresh_db_*.meta.json" -mtime +14 -delete
+find "$BACKUP_DIR" -name "bitebox_db_*.sql.gz" -mtime +14 -delete
+find "$BACKUP_DIR" -name "bitebox_db_*.meta.json" -mtime +14 -delete
 
 echo "Backup completed successfully."

@@ -3,7 +3,7 @@ set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
   echo "Usage: $0 <path_to_backup.sql.gz> <target_database_url>"
-  echo "Example: $0 /var/backups/zomatofresh/zomatofresh_db_20261019_040000Z.sql.gz postgresql://postgres:postgres@localhost:5432/zomatofresh_recovery"
+  echo "Example: $0 /var/backups/bitebox/bitebox_db_20261019_040000Z.sql.gz postgresql://postgres:postgres@localhost:5432/bitebox_recovery"
   echo ""
   echo "CRITICAL SAFETY RULE (plan.md Section 23.8):"
   echo "Always restore into an isolated quarantine database first to reconcile"

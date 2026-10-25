@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { ArrowLeft, ChevronRight } from "lucide-react";
 import { SupportCategory } from "@startup/contracts";
 import { Modal } from "@/components/ui/modal";
 import { Spinner } from "@/components/ui/misc";
@@ -9,11 +10,11 @@ import { useToast } from "@/components/ui/toast";
 import { errorMessage, useApi } from "@/lib/api";
 
 const ISSUES: Array<{ category: SupportCategory; label: string }> = [
-  { category: "MISSING_ITEM", label: "Item(s) missing from my order" },
-  { category: "WRONG_ITEM", label: "I received the wrong item" },
-  { category: "QUALITY", label: "Food quality or hygiene issue" },
+  { category: "MISSING_ITEM", label: "Something is missing" },
+  { category: "WRONG_ITEM", label: "I got the wrong item" },
+  { category: "QUALITY", label: "Food quality or hygiene" },
   { category: "LATE_DELIVERY", label: "My order is late" },
-  { category: "PAYMENT", label: "Payment or refund question" },
+  { category: "PAYMENT", label: "Payment or refund" },
   { category: "CANCELLATION", label: "I want to cancel" },
   { category: "OTHER", label: "Something else" },
 ];
@@ -26,14 +27,25 @@ export function HelpSheet({ orderId, open, onClose }: { orderId?: string; open: 
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
 
+  // Start fresh each time the sheet opens
+  useEffect(() => {
+    if (!open) {
+      setCategory(null);
+      setMessage("");
+    }
+  }, [open]);
+
+  const issue = ISSUES.find((i) => i.category === category);
+
   return (
-    <Modal open={open} onClose={onClose} title="How can we help?" description="Our support team usually replies within 10 minutes.">
+    <Modal open={open} onClose={onClose} title={issue ? issue.label : "How can we help?"} description={issue ? "Tell us what happened and we'll take it from there." : "Our team usually replies within 10 minutes."}>
       {!category ? (
-        <ul className="space-y-2">
+        <ul className="-mx-3 pb-2">
           {ISSUES.map((i) => (
             <li key={i.category}>
-              <button onClick={() => setCategory(i.category)} className="w-full text-left p-3 rounded-xl border border-border hover:border-brand text-sm font-semibold">
+              <button onClick={() => setCategory(i.category)} className="flex w-full items-center justify-between rounded-2xl px-3 py-4 text-left text-[15px] text-ink transition-colors hover:bg-subtle">
                 {i.label}
+                <ChevronRight className="h-4 w-4 text-ink-muted" />
               </button>
             </li>
           ))}
@@ -53,25 +65,25 @@ export function HelpSheet({ orderId, open, onClose }: { orderId?: string; open: 
               setBusy(false);
             }
           }}
-          className="space-y-3"
+          className="space-y-5 pb-2"
         >
-          <p className="text-sm font-bold">{ISSUES.find((i) => i.category === category)?.label}</p>
           <textarea
             autoFocus
             required
             minLength={3}
             maxLength={2000}
-            rows={4}
+            rows={5}
             value={message}
             onChange={(e) => setMessage(e.target.value)}
-            placeholder="Tell us what happened (which items, what was wrong)"
-            className="w-full p-3 bg-surface-muted border border-border rounded-xl text-sm"
+            placeholder="Which items, and what was wrong?"
+            aria-label="Describe the problem"
+            className="input"
           />
-          <div className="flex gap-2">
-            <button type="button" onClick={() => setCategory(null)} className="px-4 py-2.5 rounded-xl border border-border text-sm font-bold">
-              Back
+          <div className="flex gap-3">
+            <button type="button" onClick={() => setCategory(null)} className="btn btn-secondary">
+              <ArrowLeft className="h-4 w-4" /> Back
             </button>
-            <button disabled={busy} className="flex-1 py-2.5 rounded-xl bg-brand text-white text-sm font-bold flex items-center justify-center gap-2">
+            <button disabled={busy || message.trim().length < 3} className="btn btn-primary flex-1">
               {busy && <Spinner />} Start chat
             </button>
           </div>

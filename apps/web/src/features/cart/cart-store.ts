@@ -173,6 +173,8 @@ export const useCartStore = create<CartStoreState>()(
     {
       name: "food_delivery_cart_v2",
       version: 2,
+      // Loaded after mount (see features/hydration.ts) so SSR and the first client render match
+      skipHydration: true,
       migrate: (persisted: unknown) => {
         const old = persisted as Partial<CartStoreState> | undefined;
         // Keep v1 carts but normalise fields added in v2

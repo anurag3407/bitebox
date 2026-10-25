@@ -1,7 +1,7 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useState } from "react";
-import { CheckCircle2, AlertCircle, Info } from "lucide-react";
+import { AlertCircle, Check } from "lucide-react";
 
 type ToastKind = "success" | "error" | "info";
 interface Toast {
@@ -23,19 +23,20 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   return (
     <ToastContext.Provider value={show}>
       {children}
-      <div aria-live="polite" className="fixed top-20 left-1/2 -translate-x-1/2 z-[80] flex flex-col gap-2 w-[min(92vw,420px)] pointer-events-none">
+      <div aria-live="polite" className="pointer-events-none fixed left-1/2 top-[calc(1rem+env(safe-area-inset-top))] z-[80] flex w-[min(92vw,420px)] -translate-x-1/2 flex-col items-center gap-2">
         {toasts.map((t) => (
           <div
             key={t.id}
-            className={`pointer-events-auto flex items-start gap-2 px-4 py-3 rounded-2xl shadow-xl text-sm font-medium border ${
-              t.kind === "error"
-                ? "bg-red-50 text-red-800 border-red-200"
-                : t.kind === "success"
-                  ? "bg-success-light text-success border-success/30"
-                  : "bg-white text-text-primary border-border"
+            role={t.kind === "error" ? "alert" : "status"}
+            className={`pointer-events-auto flex animate-toast-in items-start gap-2.5 rounded-2xl px-4 py-3 text-sm font-medium shadow-pop ${
+              t.kind === "error" ? "bg-danger text-white" : "bg-ink text-white"
             }`}
           >
-            {t.kind === "error" ? <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" /> : t.kind === "success" ? <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" /> : <Info className="w-4 h-4 mt-0.5 shrink-0" />}
+            {t.kind === "error" ? (
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            ) : t.kind === "success" ? (
+              <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#7EE2A0]" />
+            ) : null}
             <span>{t.message}</span>
           </div>
         ))}

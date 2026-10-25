@@ -22,7 +22,7 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
             set -e
-            cd /opt/zomatofresh
+            cd /opt/bitebox
             git fetch --tags
             git checkout ${{ github.ref_name }}
             ./infra/scripts/deploy.sh

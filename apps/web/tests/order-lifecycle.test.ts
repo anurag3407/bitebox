@@ -76,14 +76,14 @@ describe("Full order lifecycle: browse → pay → cook → dispatch → deliver
           { menuItemId: MENU.malaiTikka, selectedOptionIds: [MENU.garlicDip], quantity: 2 },
           { menuItemId: MENU.dalMakhani, variantId: MENU.dalHalf, selectedOptionIds: [], quantity: 1 },
         ],
-        couponCode: "zomatostyle",
+        couponCode: "bitebox20",
         tipPaise: 2000,
       },
     });
     expect(quote.status).toBe(200);
     const q = quote.body.data;
     expect(q.breakdown.subtotalPaise).toBe((34000 + 3000) * 2 + 29000);
-    expect(q.appliedCouponCode).toBe("ZOMATOSTYLE");
+    expect(q.appliedCouponCode).toBe("BITEBOX20");
     expect(q.breakdown.discountPaise).toBe(5000); // 20% capped at ₹50
     expect(q.breakdown.tipPaise).toBe(2000);
 

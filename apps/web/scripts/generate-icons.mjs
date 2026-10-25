@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const OUT = path.join(path.dirname(fileURLToPath(import.meta.url)), "../public/icons");
-const BRAND = [217, 45, 71];
+const BRAND = [240, 83, 45];
 const WHITE = [255, 255, 255];
 
 function crc32(buf) {
@@ -66,31 +66,24 @@ const inRoundedRect = (u, v, inset, radius) => {
   return (radius - x) ** 2 + (radius - y) ** 2 <= radius ** 2;
 };
 
-// A steaming bowl: bowl = lower half-disc, rim = bar, steam = three rounded strokes
+// The BiteBox mark: a rounded box with a bite taken out of its top-right corner.
+// Same geometry as components/brand/logo.tsx (a 28-unit box with radius 8 and a
+// radius-7 bite centred near the corner, on a 32-unit canvas).
 function glyph(u, v, scale = 1) {
-  const cx = 0.5, s = scale;
-  const bu = (u - cx) / s, bv = (v - 0.5) / s;
-  const bowl = bv >= 0.02 && bv <= 0.26 && bu * bu + (bv - 0.02) ** 2 <= 0.27 ** 2;
-  const rim = Math.abs(bv - 0.0) <= 0.035 && Math.abs(bu) <= 0.32;
-  const base = Math.abs(bv - 0.29) <= 0.03 && Math.abs(bu) <= 0.12;
-  let steam = false;
-  for (const off of [-0.13, 0, 0.13]) {
-    const t = bv + 0.12;
-    if (t <= 0 && t >= -0.22) {
-      const sx = off + 0.035 * Math.sin((t / 0.22) * Math.PI * 2);
-      if (Math.abs(bu - sx) <= 0.028) steam = true;
-    }
-  }
-  return bowl || rim || base || steam;
+  const x = ((u - 0.5) / scale) * 32 + 16;
+  const y = ((v - 0.5) / scale) * 32 + 16;
+  const box = inRoundedRect((x - 2) / 28, (y - 2) / 28, 0, 8 / 28);
+  const bite = (x - 28) ** 2 + (y - 4) ** 2 <= 7 ** 2;
+  return box && !bite;
 }
 
 const icon = (maskable) => (u, v) => {
   // Maskable icons fill the canvas and keep the glyph inside the 80% safe zone
   const bg = maskable ? true : inRoundedRect(u, v, 0.02, 0.2);
   if (!bg) return [0, 0, 0, 0];
-  return glyph(u, v, maskable ? 0.72 : 0.9) ? [...WHITE, 1] : [...BRAND, 1];
+  return glyph(u, v, maskable ? 0.46 : 0.56) ? [...WHITE, 1] : [...BRAND, 1];
 };
-const badge = (u, v) => (glyph(u, v, 1.1) ? [...WHITE, 1] : [0, 0, 0, 0]);
+const badge = (u, v) => (glyph(u, v, 0.9) ? [...WHITE, 1] : [0, 0, 0, 0]);
 
 const targets = [
   ["icon-192.png", 192, icon(false)],

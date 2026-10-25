@@ -4,6 +4,7 @@ import React, { useState } from "react";
 import { AddressDto, Coordinate } from "@startup/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import { errorMessage, useApi } from "@/lib/api";
+import { Field, PhoneInput } from "@/components/ui/field";
 import { Spinner } from "@/components/ui/misc";
 
 const LABELS = ["Home", "Work", "Hotel", "Other"];
@@ -52,52 +53,33 @@ export function AddressForm({ location, locationLabel, initial, onSaved }: Addre
     }
   };
 
-  const input = "w-full p-3 bg-surface-muted border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand/20 focus:border-brand";
-
   return (
-    <form onSubmit={submit} className="space-y-3">
-      <div className="flex gap-2 flex-wrap">
-        {LABELS.map((l) => (
-          <button
-            type="button"
-            key={l}
-            onClick={() => setLabel(l)}
-            className={`px-3 py-1.5 rounded-full border text-xs font-semibold ${label === l ? "bg-brand-light border-brand text-brand" : "border-border"}`}
-          >
-            {l}
-          </button>
-        ))}
-      </div>
-      <label className="block text-xs font-semibold text-text-secondary">
-        Flat / House no. / Floor / Building *
-        <input required maxLength={120} value={building} onChange={(e) => setBuilding(e.target.value)} className={`${input} mt-1`} />
-      </label>
-      <label className="block text-xs font-semibold text-text-secondary">
-        Area / Street / Locality *
-        <input required maxLength={200} value={street} onChange={(e) => setStreet(e.target.value)} className={`${input} mt-1`} />
-      </label>
-      <label className="block text-xs font-semibold text-text-secondary">
-        Nearby landmark (optional)
-        <input maxLength={120} value={landmark} onChange={(e) => setLandmark(e.target.value)} className={`${input} mt-1`} />
-      </label>
-      <label className="block text-xs font-semibold text-text-secondary">
-        Phone for the delivery partner (optional)
-        <div className="flex mt-1">
-          <span className="px-3 flex items-center bg-surface-muted border border-r-0 border-border rounded-l-xl text-sm">+91</span>
-          <input
-            inputMode="numeric"
-            pattern="[6-9][0-9]{9}"
-            title="10-digit mobile number"
-            maxLength={10}
-            value={phone}
-            onChange={(e) => setPhone(e.target.value.replace(/\D/g, ""))}
-            className={`${input} rounded-l-none`}
-          />
+    <form onSubmit={submit} className="space-y-5 pb-2">
+      <div>
+        <span className="label">Save as</span>
+        <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Address label">
+          {LABELS.map((l) => (
+            <button type="button" role="radio" aria-checked={label === l} key={l} onClick={() => setLabel(l)} className="chip">
+              {l}
+            </button>
+          ))}
         </div>
-      </label>
-      {error && <p className="text-xs text-red-700 font-medium">{error}</p>}
-      <button disabled={saving} className="w-full py-3 bg-brand hover:bg-brand-hover text-white text-sm font-bold rounded-xl flex items-center justify-center gap-2 disabled:opacity-60">
-        {saving && <Spinner />} Save address & continue
+      </div>
+      <Field label="Flat, house no., floor, building">
+        <input required maxLength={120} value={building} onChange={(e) => setBuilding(e.target.value)} className="input" placeholder="e.g. Flat 402, Tower B" />
+      </Field>
+      <Field label="Area, street, locality">
+        <input required maxLength={200} value={street} onChange={(e) => setStreet(e.target.value)} className="input" />
+      </Field>
+      <Field label="Landmark" hint="Optional, but it helps your delivery partner.">
+        <input maxLength={120} value={landmark} onChange={(e) => setLandmark(e.target.value)} className="input" placeholder="e.g. Opposite the metro gate" />
+      </Field>
+      <Field label="Phone for delivery" hint="Optional. Used only if the partner can't find you.">
+        <PhoneInput value={phone} onChange={setPhone} />
+      </Field>
+      {error && <p className="notice notice-danger">{error}</p>}
+      <button disabled={saving} className="btn btn-primary btn-lg btn-block">
+        {saving && <Spinner />} Save address
       </button>
     </form>
   );

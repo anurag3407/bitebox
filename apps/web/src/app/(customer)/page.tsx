@@ -2,31 +2,38 @@
 
 import React, { useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { MapPin } from "lucide-react";
-import { CuisineRail } from "@/components/discovery/CuisineRail";
+import { ArrowRight, LocateFixed, MapPin, Search } from "lucide-react";
+import { CuisineRail, cuisineLabel } from "@/components/discovery/CuisineRail";
 import { DiscoveryFilters, FilterBar } from "@/components/discovery/FilterBar";
-import { RestaurantCard } from "@/components/discovery/RestaurantCard";
+import { RestaurantCard, RestaurantCardSkeleton } from "@/components/discovery/RestaurantCard";
 import { LocationSheet } from "@/components/location/location-sheet";
 import { EmptyState } from "@/components/ui/misc";
 import { useLocationStore } from "@/features/location/location-store";
+import { useLocationHydrated } from "@/features/hydration";
 import { useAuth } from "@/features/auth/auth-context";
 import { errorMessage, useApi } from "@/lib/api";
 
 const PAGE_SIZE = 12;
+const DEFAULT_FILTERS: DiscoveryFilters = { pureVeg: false, minRating: null, fastDelivery: false, hasOffer: false, sortBy: "relevance" };
+
+function SkeletonGrid() {
+  return (
+    <div className="grid grid-cols-1 gap-x-6 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
+      {Array.from({ length: 6 }).map((_, n) => (
+        <RestaurantCardSkeleton key={n} />
+      ))}
+    </div>
+  );
+}
 
 export default function CustomerDiscoveryPage() {
   const api = useApi();
   const { isSignedIn } = useAuth();
   const { location, label } = useLocationStore();
+  const locationReady = useLocationHydrated();
   const [locationOpen, setLocationOpen] = useState(false);
   const [cuisine, setCuisine] = useState<string | undefined>();
-  const [filters, setFilters] = useState<DiscoveryFilters>({
-    pureVeg: false,
-    minRating: null,
-    fastDelivery: false,
-    hasOffer: false,
-    sortBy: "relevance",
-  });
+  const [filters, setFilters] = useState<DiscoveryFilters>(DEFAULT_FILTERS);
 
   const query = useInfiniteQuery({
     queryKey: ["restaurants", location, cuisine, filters, isSignedIn],
@@ -45,101 +52,127 @@ export default function CustomerDiscoveryPage() {
         offset: pageParam,
       }),
     getNextPageParam: (last) => last.nextOffset ?? undefined,
+    // Wait for the saved location so we don't fetch twice and flash the wrong list
+    enabled: locationReady,
   });
 
   const favorites = useQuery({
     queryKey: ["favorites", location],
     queryFn: () => api.getFavorites(location ?? undefined),
-    enabled: isSignedIn,
+    enabled: isSignedIn && locationReady,
   });
 
   const restaurants = query.data?.pages.flatMap((p) => p.restaurants) ?? [];
   const area = label?.split(",").slice(-2, -1)[0]?.trim() || label?.split(",")[0];
+  const filtered = !!cuisine || JSON.stringify(filters) !== JSON.stringify(DEFAULT_FILTERS);
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-      {!location && (
-        <div className="mb-6 p-5 rounded-3xl bg-gradient-to-r from-brand to-rose-500 text-white flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
-            <h1 className="text-xl sm:text-2xl font-black">Hungry? Tell us where to deliver.</h1>
-            <p className="text-sm text-white/90">We&apos;ll show restaurants that deliver to you, with accurate times and fees.</p>
+    <div className="page">
+      {locationReady && !location ? (
+        <section className="py-16 sm:py-28">
+          <p className="eyebrow">Food delivery</p>
+          <h1 className="h-display mt-4 max-w-3xl">Good food from around the corner, at your door.</h1>
+          <p className="mt-5 max-w-xl text-base leading-relaxed text-ink-muted sm:text-lg">
+            Tell us where you are and we&apos;ll show restaurants that deliver to you, with real delivery times and fees.
+          </p>
+          <div className="mt-10 flex flex-col gap-3 sm:flex-row">
+            <button onClick={() => setLocationOpen(true)} className="btn btn-primary btn-lg">
+              <LocateFixed className="h-5 w-5" /> Set delivery location
+            </button>
+            <a href="#restaurants" className="btn btn-secondary btn-lg">
+              Just browsing <ArrowRight className="h-4 w-4" />
+            </a>
           </div>
-          <button onClick={() => setLocationOpen(true)} className="flex items-center justify-center gap-2 px-4 py-2.5 bg-white text-brand rounded-xl text-sm font-bold">
-            <MapPin className="w-4 h-4" /> Set location
+        </section>
+      ) : (
+        <section className="pb-10 pt-10 sm:pb-12 sm:pt-16">
+          <button onClick={() => setLocationOpen(true)} className="group inline-flex items-center gap-1.5 text-sm text-ink-muted hover:text-ink">
+            <MapPin className="h-4 w-4" /> Delivering to <span className="font-medium text-ink underline decoration-line-strong underline-offset-4 group-hover:decoration-ink">{area ?? "your location"}</span>
           </button>
-        </div>
-      )}
-
-      {location && (
-        <h1 className="text-2xl sm:text-3xl font-black text-text-primary tracking-tight mb-1">
-          Delivering to {area ?? "your location"}
-        </h1>
-      )}
-
-      {(favorites.data?.length ?? 0) > 0 && (
-        <section className="mt-6">
-          <h2 className="text-lg font-bold text-text-primary mb-3">Your favourites</h2>
-          <div className="flex gap-4 overflow-x-auto pb-2 -mx-4 px-4 snap-x">
-            {favorites.data!.map((r) => (
-              <div key={r.id} className="w-64 shrink-0 snap-start">
-                <RestaurantCard restaurant={r} />
-              </div>
-            ))}
-          </div>
+          <h1 className="h-page mt-3">What are you craving today?</h1>
         </section>
       )}
 
-      <CuisineRail selectedCuisine={cuisine} onSelectCuisine={setCuisine} />
-      <FilterBar filters={filters} onChange={setFilters} hasLocation={!!location} />
+      <div className="space-y-14 sm:space-y-16">
+        <CuisineRail selectedCuisine={cuisine} onSelectCuisine={setCuisine} />
 
-      <section className="mt-6">
-        <h2 className="text-lg font-bold text-text-primary mb-4">
-          {cuisine ? `${cuisine} near you` : location ? "Restaurants delivering to you" : "Popular restaurants"}
-        </h2>
-
-        {query.isPending ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            {Array.from({ length: 6 }).map((_, n) => (
-              <div key={n} className="rounded-2xl border border-border h-72 animate-pulse bg-surface-muted" />
-            ))}
-          </div>
-        ) : query.isError ? (
-          <EmptyState
-            title="Couldn't load restaurants"
-            body={errorMessage(query.error)}
-            action={<button onClick={() => query.refetch()} className="px-4 py-2 bg-brand text-white rounded-lg text-xs font-bold">Retry</button>}
-          />
-        ) : restaurants.length === 0 ? (
-          <EmptyState
-            title={location ? "No restaurants deliver here yet" : "No matching restaurants"}
-            body={location ? "We're expanding fast. Try another address or clear filters." : "Try clearing your filters."}
-            action={
-              <button onClick={() => setLocationOpen(true)} className="px-4 py-2 bg-brand text-white rounded-lg text-xs font-bold">
-                Change location
-              </button>
-            }
-          />
-        ) : (
-          <>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-              {restaurants.map((r) => (
-                <RestaurantCard key={r.id} restaurant={r} />
+        {(favorites.data?.length ?? 0) > 0 && (
+          <section>
+            <h2 className="h-section mb-6">Your favourites</h2>
+            <div className="no-scrollbar -mx-5 flex snap-x gap-6 overflow-x-auto px-5 sm:mx-0 sm:px-0">
+              {favorites.data!.map((r) => (
+                <div key={r.id} className="w-[280px] shrink-0 snap-start">
+                  <RestaurantCard restaurant={r} />
+                </div>
               ))}
             </div>
-            {query.hasNextPage && (
-              <div className="flex justify-center mt-8">
-                <button
-                  onClick={() => query.fetchNextPage()}
-                  disabled={query.isFetchingNextPage}
-                  className="px-6 py-2.5 rounded-xl border border-border text-sm font-bold hover:bg-surface-muted disabled:opacity-60"
-                >
-                  {query.isFetchingNextPage ? "Loading…" : "Show more restaurants"}
-                </button>
-              </div>
-            )}
-          </>
+          </section>
         )}
-      </section>
+
+        <section id="restaurants" className="scroll-mt-24">
+          <div className="sticky top-[calc(4rem+env(safe-area-inset-top))] z-30 -mx-5 mb-8 bg-white/95 px-5 py-4 backdrop-blur-xl sm:top-[calc(72px+env(safe-area-inset-top))] sm:mx-0 sm:px-0">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <h2 className="h-section">
+                {cuisine ? `${cuisineLabel(cuisine)} near you` : location ? "Restaurants near you" : "Popular restaurants"}
+              </h2>
+              <FilterBar filters={filters} onChange={setFilters} hasLocation={!!location} />
+            </div>
+          </div>
+
+          {!locationReady || query.isPending ? (
+            <SkeletonGrid />
+          ) : query.isError ? (
+            <EmptyState
+              title="Couldn't load restaurants"
+              body={errorMessage(query.error)}
+              action={
+                <button onClick={() => query.refetch()} className="btn btn-primary">
+                  Try again
+                </button>
+              }
+            />
+          ) : restaurants.length === 0 ? (
+            <EmptyState
+              icon={<Search />}
+              title={filtered ? "Nothing matches those filters" : location ? "No restaurants deliver here yet" : "No restaurants yet"}
+              body={filtered ? "Try removing a filter or picking another cuisine." : "We're adding kitchens every week. Try a different address."}
+              action={
+                filtered ? (
+                  <button
+                    onClick={() => {
+                      setFilters(DEFAULT_FILTERS);
+                      setCuisine(undefined);
+                    }}
+                    className="btn btn-primary"
+                  >
+                    Clear filters
+                  </button>
+                ) : (
+                  <button onClick={() => setLocationOpen(true)} className="btn btn-primary">
+                    Change location
+                  </button>
+                )
+              }
+            />
+          ) : (
+            <>
+              <div className="grid grid-cols-1 gap-x-6 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
+                {restaurants.map((r) => (
+                  <RestaurantCard key={r.id} restaurant={r} />
+                ))}
+              </div>
+              {query.hasNextPage && (
+                <div className="mt-14 flex justify-center">
+                  <button onClick={() => query.fetchNextPage()} disabled={query.isFetchingNextPage} className="btn btn-outline">
+                    {query.isFetchingNextPage ? "Loading…" : "Show more"}
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </section>
+      </div>
+
       <LocationSheet open={locationOpen} onClose={() => setLocationOpen(false)} />
     </div>
   );

@@ -2,21 +2,23 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { ArrowRight, Star } from "lucide-react";
 import { RestaurantDetailDto } from "@startup/contracts";
-import { useCartStore } from "@/features/cart/cart-store";
+import { AddItemInput, useCartStore } from "@/features/cart/cart-store";
+import { Logo } from "@/components/brand/logo";
+import { Modal } from "@/components/ui/modal";
 import { useToast } from "@/components/ui/toast";
 import { SafeImage, VegMark } from "@/components/ui/misc";
-
-function rupees(paise: number): string {
-  return `₹${(paise / 100).toFixed(0)}`;
-}
+import { formatRupees } from "@/lib/format";
 
 export function StorefrontClient({ restaurant, token }: { restaurant: RestaurantDetailDto; token?: string }) {
   const toast = useToast();
   const addItem = useCartStore((s) => s.addItem);
+  const replaceWith = useCartStore((s) => s.replaceWith);
   const count = useCartStore((s) => s.getItemCount());
   const subtotal = useCartStore((s) => s.getSubtotalPaise());
   const [directActive, setDirectActive] = useState(Boolean(token));
+  const [conflict, setConflict] = useState<{ pending: AddItemInput; other: string } | null>(null);
 
   useEffect(() => {
     if (!token) return;
@@ -38,7 +40,7 @@ export function StorefrontClient({ restaurant, token }: { restaurant: Restaurant
   }, [token, restaurant.slug]);
 
   const add = (item: RestaurantDetailDto["categories"][number]["items"][number]) => {
-    const result = addItem({
+    const input: AddItemInput = {
       restaurantId: restaurant.id,
       restaurantName: restaurant.name,
       restaurantSlug: restaurant.slug,
@@ -48,97 +50,89 @@ export function StorefrontClient({ restaurant, token }: { restaurant: Restaurant
       quantity: 1,
       imageUrl: item.imageUrl ?? undefined,
       isVeg: item.dietaryTag === "VEG" || item.dietaryTag === "VEGAN",
-    });
+    };
+    const result = addItem(input);
+    if (result.conflictRestaurantName) {
+      setConflict({ pending: input, other: result.conflictRestaurantName });
+      return;
+    }
     if (!result.success) {
-      toast(result.conflictRestaurantName ? `Your cart has items from ${result.conflictRestaurantName}.` : result.reason ?? "Could not add this item.", "error");
+      toast(result.reason ?? "Could not add this item.", "error");
       return;
     }
     toast(`${item.name} added`, "success");
   };
 
   return (
-    <main className="min-h-screen bg-surface-muted pb-28">
-      <header className="bg-white border-b border-border">
-        <div className="max-w-3xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between gap-3">
-          <Link href="/" className="text-sm font-bold text-text-secondary hover:text-brand">
-            ← Marketplace
+    <main className="min-h-screen bg-white pb-32">
+      <header className="border-b border-line">
+        <div className="page-narrow flex h-16 items-center justify-between gap-3">
+          <Link href="/" aria-label="BiteBox home">
+            <Logo />
           </Link>
-          <span className={`text-[11px] font-black px-2.5 py-1 rounded-full ${directActive ? "bg-success-light text-success" : "bg-amber-50 text-amber-700"}`}>
-            {directActive ? "DIRECT ORDER ACTIVE" : "DIRECT LINK"}
-          </span>
+          <span className={`badge ${directActive ? "badge-success" : "badge-neutral"}`}>{directActive ? "Direct order active" : "Direct link"}</span>
         </div>
       </header>
 
-      <section className="bg-white border-b border-border">
-        <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6">
-          <div className="flex gap-4 items-start">
-            <SafeImage src={restaurant.heroImageUrl ?? undefined} alt={restaurant.name} className="w-24 h-24 rounded-2xl object-cover shrink-0" />
-            <div className="min-w-0">
-              <h1 className="text-2xl font-black text-text-primary leading-tight">{restaurant.name}</h1>
-              <p className="text-sm text-text-secondary mt-1">{restaurant.cuisines.join(" · ")}</p>
-              <div className="flex flex-wrap items-center gap-2 mt-2 text-xs font-semibold text-text-secondary">
-                <span className="text-amber-700">★ {restaurant.rating.toFixed(1)}</span>
-                <span>·</span>
-                <span>{restaurant.deliveryTimeMinMinutes}–{restaurant.deliveryTimeMaxMinutes} min</span>
-                <span>·</span>
-                <span>{restaurant.addressText}</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-5 rounded-2xl bg-brand-light border border-brand/20 px-4 py-3">
-            <p className="text-sm font-black text-brand">Ordering direct from {restaurant.name}</p>
-            <p className="text-xs text-text-secondary mt-0.5">
-              0% restaurant commission. Menu prices stay with the kitchen — your delivery and platform fees are shown at checkout.
+      <section className="page-narrow pt-10 sm:pt-14">
+        <div className="flex items-start gap-5">
+          <SafeImage src={restaurant.heroImageUrl ?? undefined} alt={restaurant.name} className="h-20 w-20 shrink-0 rounded-3xl object-cover sm:h-24 sm:w-24" />
+          <div className="min-w-0">
+            <h1 className="h-page">{restaurant.name}</h1>
+            <p className="mt-1.5 text-[15px] text-ink-muted">{restaurant.cuisines.join(", ")}</p>
+            <p className="mt-2 flex flex-wrap items-center gap-x-2 text-sm text-ink-muted">
+              <span className="inline-flex items-center gap-1 text-ink">
+                <Star className="h-3.5 w-3.5 fill-ink" /> {restaurant.rating.toFixed(1)}
+              </span>
+              <span>·</span>
+              <span>
+                {restaurant.deliveryTimeMinMinutes}–{restaurant.deliveryTimeMaxMinutes} min
+              </span>
             </p>
           </div>
         </div>
+        <div className="panel mt-8 p-5">
+          <p className="text-sm font-medium text-ink">You&apos;re ordering direct from {restaurant.name}</p>
+          <p className="mt-1 text-sm leading-relaxed text-ink-muted">0% restaurant commission. Menu prices go to the kitchen; delivery and platform fees are shown at checkout.</p>
+        </div>
       </section>
 
-      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 space-y-8">
-        {restaurant.categories.length === 0 && (
-          <p className="text-sm text-text-secondary text-center py-10">The menu is being updated.</p>
-        )}
+      <div className="page-narrow mt-12 space-y-14">
+        {restaurant.categories.length === 0 && <p className="py-10 text-center text-sm text-ink-muted">The menu is being updated.</p>}
         {restaurant.categories.map((category) => (
           <section key={category.id}>
-            <h2 className="text-lg font-black text-text-primary mb-2">{category.name}</h2>
-            <ul className="bg-white rounded-2xl border border-border divide-y divide-border overflow-hidden">
+            <h2 className="h-section">{category.name}</h2>
+            <ul className="rows mt-2">
               {category.items.map((item) => {
                 const customisable = item.variants.length > 0 || item.modifierGroups.length > 0;
                 return (
-                  <li key={item.id} className={`p-4 flex gap-4 ${item.isAvailable ? "" : "opacity-50"}`}>
-                    <div className="flex-1 min-w-0">
+                  <li key={item.id} className={`flex gap-5 py-6 ${item.isAvailable ? "" : "opacity-50"}`}>
+                    <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <VegMark tag={item.dietaryTag} />
-                        {item.isBestseller && (
-                          <span className="text-[9px] font-black text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded">BESTSELLER</span>
+                        {item.isBestseller && <span className="text-xs font-medium text-accent">Bestseller</span>}
+                      </div>
+                      <h3 className="mt-2 font-semibold text-ink">{item.name}</h3>
+                      <p className="mt-1 text-[15px] text-ink tabular">{formatRupees(item.pricePaise)}</p>
+                      {item.description && <p className="mt-2 line-clamp-2 text-sm leading-relaxed text-ink-muted">{item.description}</p>}
+                    </div>
+                    <div className="flex w-24 shrink-0 flex-col items-center">
+                      <SafeImage src={item.imageUrl ?? undefined} alt={item.name} className="aspect-square w-full rounded-2xl object-cover" />
+                      <div className="-mt-4">
+                        {item.isAvailable ? (
+                          customisable ? (
+                            <Link href={`/restaurants/${restaurant.slug}`} className="btn btn-sm border border-line bg-white px-4 text-ink shadow-soft hover:border-ink">
+                              Options
+                            </Link>
+                          ) : (
+                            <button onClick={() => add(item)} className="btn btn-sm border border-line bg-white px-5 text-ink shadow-soft hover:border-ink">
+                              Add
+                            </button>
+                          )
+                        ) : (
+                          <span className="inline-flex h-9 items-center rounded-full bg-white px-3 text-xs text-ink-muted shadow-soft">Sold out</span>
                         )}
                       </div>
-                      <h3 className="font-bold text-text-primary mt-1">{item.name}</h3>
-                      <p className="text-sm font-semibold text-text-primary">{rupees(item.pricePaise)}</p>
-                      {item.description && <p className="text-xs text-text-secondary mt-1 line-clamp-2">{item.description}</p>}
-                    </div>
-                    <div className="shrink-0 flex flex-col items-center gap-2">
-                      <SafeImage src={item.imageUrl ?? undefined} alt={item.name} className="w-24 h-20 rounded-xl object-cover" />
-                      {item.isAvailable ? (
-                        customisable ? (
-                          <Link
-                            href={`/restaurants/${restaurant.slug}`}
-                            className="text-[11px] font-black text-brand border border-brand rounded-lg px-3 py-1.5 hover:bg-brand-light"
-                          >
-                            CUSTOMISE
-                          </Link>
-                        ) : (
-                          <button
-                            onClick={() => add(item)}
-                            className="text-[11px] font-black text-brand border border-brand rounded-lg px-3 py-1.5 hover:bg-brand-light"
-                          >
-                            ADD
-                          </button>
-                        )
-                      ) : (
-                        <span className="text-[10px] font-bold text-text-secondary">SOLD OUT</span>
-                      )}
                     </div>
                   </li>
                 );
@@ -149,18 +143,41 @@ export function StorefrontClient({ restaurant, token }: { restaurant: Restaurant
       </div>
 
       {count > 0 && (
-        <div className="fixed bottom-0 inset-x-0 z-40 bg-white border-t border-border px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
-          <div className="max-w-3xl mx-auto flex items-center gap-3">
-            <div className="flex-1 min-w-0">
-              <p className="text-xs text-text-secondary">{count} item{count === 1 ? "" : "s"} · {restaurant.name}</p>
-              <p className="text-base font-black text-text-primary">{rupees(subtotal)}</p>
-            </div>
-            <Link href="/checkout" className="bg-brand text-white text-sm font-black rounded-xl px-5 py-3 hover:bg-brand-hover">
-              Checkout
-            </Link>
-          </div>
+        <div className="fixed inset-x-4 bottom-[calc(1rem+env(safe-area-inset-bottom))] z-40 mx-auto max-w-xl animate-sheet-up">
+          <Link href="/checkout" className="flex items-center justify-between gap-4 rounded-full bg-ink py-2.5 pl-6 pr-2.5 text-white shadow-pop">
+            <span className="text-sm font-semibold tabular">
+              {count} item{count === 1 ? "" : "s"} · {formatRupees(subtotal)}
+            </span>
+            <span className="flex h-11 items-center gap-1.5 rounded-full bg-white px-5 text-sm font-medium text-ink">
+              Checkout <ArrowRight className="h-4 w-4" />
+            </span>
+          </Link>
         </div>
       )}
+
+      <Modal
+        open={!!conflict}
+        onClose={() => setConflict(null)}
+        size="sm"
+        title="Start a new cart?"
+        description={`Your cart has items from ${conflict?.other}. Starting a new cart removes them.`}
+        footer={
+          <div className="flex gap-3">
+            <button onClick={() => setConflict(null)} className="btn btn-secondary flex-1">
+              Keep cart
+            </button>
+            <button
+              onClick={() => {
+                if (conflict) replaceWith([conflict.pending]);
+                setConflict(null);
+              }}
+              className="btn btn-primary flex-1"
+            >
+              Start new cart
+            </button>
+          </div>
+        }
+      />
     </main>
   );
 }

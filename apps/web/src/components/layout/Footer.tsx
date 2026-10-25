@@ -1,29 +1,28 @@
 import React from "react";
 import Link from "next/link";
+import { Logo } from "@/components/brand/logo";
 
 const COLUMNS: Array<{ title: string; links: Array<[string, string]> }> = [
-  { title: "ZomatoFresh", links: [["Restaurants near you", "/"], ["Search", "/search"], ["Your orders", "/account?tab=orders"], ["Help & support", "/support"]] },
-  { title: "For partners", links: [["Add your restaurant", "/partner?type=restaurant"], ["Deliver with us", "/partner?type=rider"], ["Restaurant console", "/merchant"], ["Delivery partner app", "/rider"]] },
-  { title: "Legal", links: [["Terms of service", "/legal/terms"], ["Privacy policy", "/legal/privacy"], ["Cancellation & refunds", "/legal/refunds"], ["Grievance redressal", "/legal/grievance"]] },
+  { title: "Order", links: [["Restaurants near you", "/"], ["Search", "/search"], ["Your orders", "/account?tab=orders"], ["Help", "/support"]] },
+  { title: "Partners", links: [["Add your restaurant", "/partner?type=restaurant"], ["Deliver with us", "/partner?type=rider"], ["Restaurant console", "/merchant"], ["Delivery partner app", "/rider"]] },
+  { title: "Legal", links: [["Terms", "/legal/terms"], ["Privacy", "/legal/privacy"], ["Cancellations & refunds", "/legal/refunds"], ["Grievance redressal", "/legal/grievance"]] },
 ];
 
 export function Footer() {
   return (
-    <footer className="bg-surface-muted border-t border-border mt-16">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 grid grid-cols-2 md:grid-cols-4 gap-8 text-sm">
+    <footer className="mt-24 border-t border-line">
+      <div className="page grid grid-cols-2 gap-10 py-16 md:grid-cols-[1.4fr_1fr_1fr_1fr]">
         <div className="col-span-2 md:col-span-1">
-          <p className="text-xl font-black">
-            Zomato<span className="text-brand">Fresh</span>
-          </p>
-          <p className="text-xs text-text-secondary mt-2">Food from restaurants near you, delivered fast with live tracking.</p>
+          <Logo />
+          <p className="mt-4 max-w-xs text-sm leading-relaxed text-ink-muted">Good food from restaurants near you, delivered fast and priced honestly.</p>
         </div>
         {COLUMNS.map((col) => (
           <div key={col.title}>
-            <h3 className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-3">{col.title}</h3>
-            <ul className="space-y-2">
+            <h3 className="text-sm font-medium text-ink">{col.title}</h3>
+            <ul className="mt-4 space-y-3">
               {col.links.map(([label, href]) => (
                 <li key={href}>
-                  <Link href={href} className="hover:text-brand">
+                  <Link href={href} className="text-sm text-ink-muted transition-colors hover:text-ink">
                     {label}
                   </Link>
                 </li>
@@ -32,7 +31,9 @@ export function Footer() {
           </div>
         ))}
       </div>
-      <p className="text-center text-[11px] text-text-secondary pb-6">Prices include GST where applicable. Restaurant partners are responsible for food quality and FSSAI compliance.</p>
+      <div className="page border-t border-line py-6">
+        <p className="text-xs text-ink-muted">Prices include GST where applicable. Restaurant partners are responsible for food quality and FSSAI compliance.</p>
+      </div>
     </footer>
   );
 }

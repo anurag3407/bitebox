@@ -13,8 +13,8 @@
 ## 3. Commands / Dashboard References
 ```bash
 # Update secret in production and restart containers
-nano /opt/zomatofresh/.env
-docker compose -f /opt/zomatofresh/infra/compose/docker-compose.yml up -d
+nano /opt/bitebox/.env
+docker compose -f /opt/bitebox/infra/compose/docker-compose.yml up -d
 ```
 
 ## 4. Forbidden Actions

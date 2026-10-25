@@ -2,16 +2,17 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bell, ChefHat, Clock, KeyRound, Package, Volume2, VolumeX, X } from "lucide-react";
+import { useSearchParams } from "next/navigation";
+import { Store, Volume2, VolumeX } from "lucide-react";
 import { OrderDetailDto } from "@startup/contracts";
-import { PortalHeader, RoleGate } from "@/components/portal/role-gate";
+import { PortalBody, PortalHeader, RoleGate } from "@/components/portal/role-gate";
 import { MenuEditor } from "@/components/merchant/menu-editor";
 import { MerchantGrowthPanel } from "@/components/merchant/merchant-growth-panel";
 import { OutletSettings } from "@/components/merchant/outlet-settings";
 import { EarningsPanel } from "@/components/payouts/earnings-panel";
-import { useSearchParams } from "next/navigation";
 import { Modal } from "@/components/ui/modal";
-import { EmptyState, Spinner } from "@/components/ui/misc";
+import { Toggle } from "@/components/ui/field";
+import { EmptyState, PageSpinner, Spinner } from "@/components/ui/misc";
 import { useToast } from "@/components/ui/toast";
 import { errorMessage, useApi } from "@/lib/api";
 import { playChime, unlockAudio } from "@/lib/alert-sound";
@@ -19,6 +20,7 @@ import { STATE_LABELS, formatRupees, formatTime, timeAgo } from "@/lib/format";
 
 const PREP_OPTIONS = [10, 15, 20, 30, 45];
 const REJECT_REASONS = ["Item(s) out of stock", "Kitchen is too busy", "Closing soon", "Cannot fulfil special request"];
+const ORDER_POLL_MS = 5000;
 
 function Countdown({ deadline }: { deadline?: string }) {
   const [now, setNow] = useState(Date.now());
@@ -28,11 +30,7 @@ function Countdown({ deadline }: { deadline?: string }) {
   }, []);
   if (!deadline) return null;
   const left = Math.max(0, Math.round((new Date(deadline).getTime() - now) / 1000));
-  return (
-    <span className={`text-xs font-black px-2 py-1 rounded-lg ${left < 30 ? "bg-red-600 text-white animate-pulse" : "bg-amber-100 text-amber-900"}`}>
-      {left > 0 ? `${left}s to accept` : "Expired"}
-    </span>
-  );
+  return <span className={`badge tabular ${left < 30 ? "animate-pulse bg-danger text-white" : "badge-warn"}`}>{left > 0 ? `${left}s left` : "Expired"}</span>;
 }
 
 function OrderCard({ order, restaurantId }: { order: OrderDetailDto; restaurantId: string }) {
@@ -57,78 +55,87 @@ function OrderCard({ order, restaurantId }: { order: OrderDetailDto; restaurantI
   };
 
   const state = order.fulfillmentState;
+  const inKitchen = state === "ACCEPTED" || state === "PREPARING" || state === "READY_FOR_PICKUP";
   return (
-    <article className="bg-white rounded-2xl border border-border p-4 shadow-sm space-y-3">
-      <div className="flex items-start justify-between gap-2">
+    <article className={`space-y-5 rounded-3xl bg-white p-5 ${state === "AWAITING_MERCHANT" ? "shadow-pop ring-1 ring-ink" : "shadow-soft"}`}>
+      <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-bold text-text-secondary">#{order.orderNumber}</p>
-          <p className="text-[11px] text-text-secondary">{timeAgo(order.createdAt)}</p>
+          <p className="font-semibold text-ink">#{order.orderNumber}</p>
+          <p className="text-xs text-ink-muted">{timeAgo(order.createdAt)}</p>
         </div>
-        {state === "AWAITING_MERCHANT" ? <Countdown deadline={order.merchantResponseDeadlineAt} /> : <span className="text-[11px] font-bold text-text-secondary">{STATE_LABELS[state]}</span>}
+        {state === "AWAITING_MERCHANT" ? <Countdown deadline={order.merchantResponseDeadlineAt} /> : <span className="badge badge-neutral">{STATE_LABELS[state]}</span>}
       </div>
 
-      <ul className="space-y-1.5 text-sm">
+      <ul className="space-y-2.5 text-[15px]">
         {order.items.map((i, idx) => (
           <li key={idx}>
-            <span className="font-bold">{i.quantity} ×</span> {i.name}
-            {i.variantName && <span className="text-text-secondary"> · {i.variantName}</span>}
-            {i.selectedOptionNames.length > 0 && <span className="block text-[11px] text-text-secondary">+ {i.selectedOptionNames.join(", ")}</span>}
-            {i.instructions && <span className="block text-[11px] text-amber-800 font-semibold">“{i.instructions}”</span>}
+            <span className="font-semibold tabular text-ink">{i.quantity}×</span> <span className="text-ink">{i.name}</span>
+            {i.variantName && <span className="text-ink-muted"> · {i.variantName}</span>}
+            {i.selectedOptionNames.length > 0 && <span className="block text-sm text-ink-muted">+ {i.selectedOptionNames.join(", ")}</span>}
+            {i.instructions && <span className="block text-sm font-medium text-warn">“{i.instructions}”</span>}
           </li>
         ))}
       </ul>
-      {order.instructions && <p className="text-xs bg-amber-50 text-amber-900 p-2 rounded-lg">Note: {order.instructions}</p>}
-      <p className="text-xs text-text-secondary">Item total {formatRupees(order.breakdown.subtotalPaise)}</p>
+      {order.instructions && <p className="notice notice-warn">Note: {order.instructions}</p>}
 
-      {(state === "ACCEPTED" || state === "PREPARING" || state === "READY_FOR_PICKUP") && order.pickupCode && (
-        <div className="flex items-center gap-2 p-2 rounded-xl bg-surface-muted text-xs">
-          <KeyRound className="w-4 h-4 text-brand" /> Pickup code <b className="tracking-widest text-sm">{order.pickupCode}</b>
-          {order.rider && <span className="ml-auto text-text-secondary">Rider: {order.rider.name}</span>}
+      {inKitchen && order.pickupCode && (
+        <div className="flex items-center justify-between rounded-2xl bg-subtle px-4 py-3 text-sm">
+          <span className="text-ink-muted">
+            Pickup code <b className="ml-1 text-base font-semibold tracking-widest text-ink">{order.pickupCode}</b>
+          </span>
+          {order.rider && <span className="text-ink-muted">{order.rider.name}</span>}
         </div>
       )}
 
+      <p className="text-sm text-ink-muted">Item total {formatRupees(order.breakdown.subtotalPaise)}</p>
+
       {state === "AWAITING_MERCHANT" && (
-        <div className="space-y-2">
-          <div className="flex gap-1.5 flex-wrap" role="radiogroup" aria-label="Preparation time">
-            {PREP_OPTIONS.map((m) => (
-              <button key={m} role="radio" aria-checked={prep === m} onClick={() => setPrep(m)} className={`px-2.5 py-1 rounded-lg border text-xs font-bold ${prep === m ? "bg-text-primary text-white border-text-primary" : "border-border"}`}>
-                {m}m
-              </button>
-            ))}
+        <div className="space-y-4 border-t border-line pt-5">
+          <div>
+            <p className="label">Ready in</p>
+            <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Preparation time">
+              {PREP_OPTIONS.map((m) => (
+                <button key={m} role="radio" aria-checked={prep === m} onClick={() => setPrep(m)} className="chip h-8 px-3 text-xs">
+                  {m} min
+                </button>
+              ))}
+            </div>
           </div>
           <div className="flex gap-2">
-            <button disabled={busy} onClick={() => setRejecting(true)} className="px-3 py-2.5 rounded-xl border border-red-200 text-red-700 text-sm font-bold">
+            <button disabled={busy} onClick={() => setRejecting(true)} className="btn btn-secondary">
               Reject
             </button>
-            <button disabled={busy} onClick={() => run(() => api.merchantAcceptOrder(order.orderId, prep), "Order accepted")} className="flex-1 py-2.5 rounded-xl bg-success text-white text-sm font-black flex items-center justify-center gap-2">
-              {busy && <Spinner />} Accept · {prep} min
+            <button disabled={busy} onClick={() => run(() => api.merchantAcceptOrder(order.orderId, prep), "Order accepted")} className="btn btn-success flex-1">
+              {busy && <Spinner />} Accept
             </button>
           </div>
         </div>
       )}
       {state === "ACCEPTED" && (
-        <div className="flex gap-2">
-          <button disabled={busy} onClick={() => run(() => api.merchantMarkPreparing(order.orderId), "Marked as preparing")} className="flex-1 py-2.5 rounded-xl border border-border text-sm font-bold">
+        <div className="flex gap-2 border-t border-line pt-5">
+          <button disabled={busy} onClick={() => run(() => api.merchantMarkPreparing(order.orderId), "Marked as preparing")} className="btn btn-secondary flex-1">
             Start preparing
           </button>
-          <button disabled={busy} onClick={() => run(() => api.merchantMarkReady(order.orderId), "Marked ready")} className="flex-1 py-2.5 rounded-xl bg-brand text-white text-sm font-bold">
+          <button disabled={busy} onClick={() => run(() => api.merchantMarkReady(order.orderId), "Marked ready")} className="btn btn-primary flex-1">
             Food ready
           </button>
         </div>
       )}
       {state === "PREPARING" && (
-        <button disabled={busy} onClick={() => run(() => api.merchantMarkReady(order.orderId), "Marked ready")} className="w-full py-2.5 rounded-xl bg-brand text-white text-sm font-bold">
-          Food ready for pickup
-        </button>
+        <div className="border-t border-line pt-5">
+          <button disabled={busy} onClick={() => run(() => api.merchantMarkReady(order.orderId), "Marked ready")} className="btn btn-primary btn-block">
+            Food ready for pickup
+          </button>
+        </div>
       )}
-      {(state === "ACCEPTED" || state === "PREPARING" || state === "READY_FOR_PICKUP") && (
-        <button onClick={() => setRejecting(true)} className="text-[11px] text-text-secondary underline">
+      {inKitchen && (
+        <button onClick={() => setRejecting(true)} className="text-xs text-ink-muted underline underline-offset-4 hover:text-ink">
           Can&apos;t fulfil this order?
         </button>
       )}
 
-      <Modal open={rejecting} onClose={() => setRejecting(false)} size="sm" title="Reject order" description="The customer will be refunded in full.">
-        <ul className="space-y-2">
+      <Modal open={rejecting} onClose={() => setRejecting(false)} size="sm" title="Why can't you take it?" description="The customer gets a full refund.">
+        <ul className="-mx-3 pb-2">
           {REJECT_REASONS.map((r) => (
             <li key={r}>
               <button
@@ -136,7 +143,7 @@ function OrderCard({ order, restaurantId }: { order: OrderDetailDto; restaurantI
                   setRejecting(false);
                   run(() => api.merchantRejectOrder(order.orderId, r), "Order rejected");
                 }}
-                className="w-full text-left p-3 rounded-xl border border-border hover:border-red-300 text-sm"
+                className="w-full rounded-2xl px-3 py-4 text-left text-[15px] text-ink transition-colors hover:bg-danger-soft hover:text-danger"
               >
                 {r}
               </button>
@@ -153,10 +160,10 @@ const ALL_STAFF = ["OWNER", "MANAGER", "KITCHEN", "CATALOG_EDITOR"];
 const TABS: Array<{ id: Tab; label: string; roles: string[] }> = [
   { id: "live", label: "Live orders", roles: ALL_STAFF },
   { id: "menu", label: "Menu", roles: ALL_STAFF },
+  { id: "history", label: "History", roles: ALL_STAFF },
   { id: "outlet", label: "Outlet & staff", roles: ["OWNER", "MANAGER"] },
   { id: "growth", label: "Growth", roles: ["OWNER"] },
   { id: "earnings", label: "Earnings", roles: ["OWNER"] },
-  { id: "history", label: "History", roles: ALL_STAFF },
 ];
 
 function MerchantConsole() {
@@ -165,155 +172,211 @@ function MerchantConsole() {
   const restaurants = useQuery({ queryKey: ["merchant-restaurants"], queryFn: () => api.getMerchantRestaurants() });
   const [restaurantId, setRestaurantId] = useState<string | null>(null);
   const params = useSearchParams();
-  const [tab, setTab] = useState<Tab>((TABS.find((t) => t.id === params.get("tab"))?.id ?? "live") as Tab);
+  const [requestedTab, setTab] = useState<Tab>((TABS.find((t) => t.id === params.get("tab"))?.id ?? "live") as Tab);
   const [sound, setSound] = useState(false);
+  const [togglingIntake, setTogglingIntake] = useState(false);
   const seen = useRef<Set<string>>(new Set());
+  const primed = useRef(false);
 
   useEffect(() => {
     if (!restaurantId && restaurants.data?.[0]) setRestaurantId(restaurants.data[0].id);
   }, [restaurants.data, restaurantId]);
   const restaurant = restaurants.data?.find((r) => r.id === restaurantId);
+  const allowedTabs = TABS.filter((t) => restaurant && t.roles.includes(restaurant.staffRole));
+  // A deep link to a tab this staff role can't use falls back to live orders
+  const tab: Tab = allowedTabs.some((t) => t.id === requestedTab) ? requestedTab : "live";
 
-  const orders = useQuery({
-    queryKey: ["merchant-orders", restaurantId, tab],
-    queryFn: () => api.getMerchantOrders(restaurantId!, tab === "history" ? "all" : "active"),
-    enabled: !!restaurantId && (tab === "live" || tab === "history"),
-    refetchInterval: 5000,
+  // Active orders are polled on every tab so new-order alerts still ring while staff edit the menu
+  const liveOrders = useQuery({
+    queryKey: ["merchant-orders", restaurantId, "active"],
+    queryFn: () => api.getMerchantOrders(restaurantId!, "active"),
+    enabled: !!restaurantId,
+    refetchInterval: ORDER_POLL_MS,
     refetchIntervalInBackground: true,
   });
+  const history = useQuery({
+    queryKey: ["merchant-orders", restaurantId, "all"],
+    queryFn: () => api.getMerchantOrders(restaurantId!, "all"),
+    enabled: !!restaurantId && tab === "history",
+  });
 
-  // New-order alert: chime + title flash for orders we have not seen yet
+  // Browsers only allow audio after a user gesture; unlock on the first tap anywhere
   useEffect(() => {
-    const fresh = (orders.data ?? []).filter((o) => o.fulfillmentState === "AWAITING_MERCHANT" && !seen.current.has(o.orderId));
-    if (fresh.length > 0 && seen.current.size > 0 && sound) playChime();
-    for (const o of orders.data ?? []) seen.current.add(o.orderId);
-    const pending = (orders.data ?? []).filter((o) => o.fulfillmentState === "AWAITING_MERCHANT").length;
-    document.title = pending ? `(${pending}) New order! · Restaurant` : "Restaurant console";
-  }, [orders.data, sound]);
+    const unlock = () => unlockAudio();
+    window.addEventListener("pointerdown", unlock, { once: true });
+    return () => window.removeEventListener("pointerdown", unlock);
+  }, []);
+
+  // Reset alert state when switching outlets
+  useEffect(() => {
+    seen.current = new Set();
+    primed.current = false;
+  }, [restaurantId]);
+
+  // New-order alert: chime + title badge for orders we have not seen yet
+  useEffect(() => {
+    if (!liveOrders.data) return;
+    const fresh = liveOrders.data.filter((o) => o.fulfillmentState === "AWAITING_MERCHANT" && !seen.current.has(o.orderId));
+    // The first load only establishes what's already on the board
+    if (fresh.length > 0 && primed.current && sound) playChime();
+    for (const o of liveOrders.data) seen.current.add(o.orderId);
+    primed.current = true;
+    const pending = liveOrders.data.filter((o) => o.fulfillmentState === "AWAITING_MERCHANT").length;
+    document.title = pending ? `(${pending}) New order · BiteBox` : "Restaurant console · BiteBox";
+  }, [liveOrders.data, sound]);
+  useEffect(() => {
+    const original = document.title;
+    return () => {
+      document.title = original;
+    };
+  }, []);
 
   const columns = useMemo(() => {
-    const list = orders.data ?? [];
+    const list = liveOrders.data ?? [];
     return {
       new: list.filter((o) => o.fulfillmentState === "AWAITING_MERCHANT"),
       kitchen: list.filter((o) => o.fulfillmentState === "ACCEPTED" || o.fulfillmentState === "PREPARING"),
       ready: list.filter((o) => o.fulfillmentState === "READY_FOR_PICKUP"),
     };
-  }, [orders.data]);
+  }, [liveOrders.data]);
 
-  if (restaurants.isPending) return <div className="p-10 text-center"><Spinner /></div>;
-  if (!restaurants.data?.length) return <EmptyState title="No restaurant linked" body="Ask your restaurant owner to add you as staff." />;
+  if (restaurants.isPending) return <PageSpinner />;
+  if (!restaurants.data?.length) {
+    return (
+      <>
+        <PortalHeader title="Restaurant console" />
+        <EmptyState icon={<Store />} title="No restaurant linked" body="Ask your restaurant owner to add you as staff." />
+      </>
+    );
+  }
 
   return (
     <>
       <PortalHeader
         title="Restaurant console"
         right={
-          <>
-            <button
-              onClick={() => {
-                unlockAudio();
-                setSound(!sound);
-              }}
-              aria-label={sound ? "Mute new order alerts" : "Enable new order alerts"}
-              className={`p-2 rounded-lg ${sound ? "bg-white/20" : "bg-amber-500 animate-pulse"}`}
-              title={sound ? "Alerts on" : "Tap to enable order alert sound"}
-            >
-              {sound ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
-            </button>
-          </>
+          <button
+            onClick={() => {
+              unlockAudio();
+              setSound(!sound);
+            }}
+            aria-label={sound ? "Mute new order alerts" : "Turn on new order alerts"}
+            className={`btn btn-sm ${sound ? "btn-ghost" : "btn-primary animate-pulse"}`}
+          >
+            {sound ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
+            <span className="hidden sm:inline">{sound ? "Alerts on" : "Turn on alerts"}</span>
+          </button>
         }
       />
-      <div className="max-w-7xl mx-auto px-4 py-4 space-y-4">
-        <div className="flex flex-wrap items-center gap-3 justify-between">
-          <select value={restaurantId ?? ""} onChange={(e) => setRestaurantId(e.target.value)} className="px-3 py-2 rounded-xl border border-border text-sm font-bold">
-            {restaurants.data.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.name}
-              </option>
-            ))}
-          </select>
+      <PortalBody>
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          {restaurants.data.length > 1 ? (
+            <select value={restaurantId ?? ""} onChange={(e) => setRestaurantId(e.target.value)} className="input h-11 w-auto min-w-[220px] font-medium" aria-label="Outlet">
+              {restaurants.data.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <h1 className="h-page">{restaurant?.name}</h1>
+          )}
           {restaurant && (
-            <label className="flex items-center gap-2 text-sm font-bold cursor-pointer">
-              <span className={restaurant.isAcceptingOrders ? "text-success" : "text-red-700"}>{restaurant.isAcceptingOrders ? "Accepting orders" : "Paused"}</span>
-              <input
-                type="checkbox"
-                role="switch"
+            <div className="flex items-center gap-3 rounded-full bg-subtle py-1.5 pl-5 pr-1.5">
+              <span className={`text-sm font-medium ${restaurant.isAcceptingOrders ? "text-success" : "text-ink-muted"}`}>
+                {restaurant.isAcceptingOrders ? "Accepting orders" : "Paused"}
+              </span>
+              <Toggle
+                label="Accepting orders"
                 checked={restaurant.isAcceptingOrders}
-                onChange={async (e) => {
+                disabled={togglingIntake}
+                onChange={async (next) => {
+                  setTogglingIntake(true);
                   try {
-                    await api.merchantSetAcceptingOrders(restaurant.id, e.target.checked);
-                    restaurants.refetch();
+                    await api.merchantSetAcceptingOrders(restaurant.id, next);
+                    await restaurants.refetch();
                   } catch (err) {
                     toast(errorMessage(err), "error");
+                  } finally {
+                    setTogglingIntake(false);
                   }
                 }}
-                className="w-5 h-5 accent-[#24963F]"
               />
-            </label>
+            </div>
           )}
         </div>
 
-        <nav className="flex gap-2 overflow-x-auto">
-          {TABS.filter((t) => restaurant && t.roles.includes(restaurant.staffRole)).map((t) => (
-            <button key={t.id} onClick={() => setTab(t.id)} className={`shrink-0 px-4 py-2 rounded-full text-sm font-bold border ${tab === t.id ? "bg-brand text-white border-brand" : "border-border"}`}>
+        <div role="tablist" aria-label="Console sections" className="tabs mt-8">
+          {allowedTabs.map((t) => (
+            <button key={t.id} role="tab" aria-selected={tab === t.id} onClick={() => setTab(t.id)} className="tab">
               {t.label}
+              {t.id === "live" && columns.new.length > 0 && <span className="ml-2 rounded-full bg-accent px-1.5 py-0.5 text-[11px] font-semibold text-white tabular">{columns.new.length}</span>}
             </button>
           ))}
-        </nav>
+        </div>
 
-        {tab === "live" && restaurantId && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {([
-              ["new", "New", Bell],
-              ["kitchen", "In the kitchen", ChefHat],
-              ["ready", "Ready for pickup", Package],
-            ] as const).map(([key, title, Icon]) => (
-              <section key={key} className="bg-surface-muted rounded-3xl p-3 min-h-[200px]">
-                <h2 className="text-sm font-black flex items-center gap-2 px-1 mb-3">
-                  <Icon className="w-4 h-4" /> {title} <span className="text-text-secondary">({columns[key].length})</span>
-                </h2>
-                <div className="space-y-3">
-                  {columns[key].map((o) => (
-                    <OrderCard key={o.orderId} order={o} restaurantId={restaurantId} />
-                  ))}
-                  {columns[key].length === 0 && <p className="text-xs text-text-secondary text-center py-8">Nothing here</p>}
-                </div>
-              </section>
+        <div className="pt-8">
+          {tab === "live" && restaurantId && (
+            <>
+              <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
+                {(
+                  [
+                    ["new", "New"],
+                    ["kitchen", "In the kitchen"],
+                    ["ready", "Ready for pickup"],
+                  ] as const
+                ).map(([key, title]) => (
+                  <section key={key} className="panel min-h-[240px] p-4">
+                    <h2 className="flex items-center justify-between px-2 pb-4 pt-1 text-sm font-semibold text-ink">
+                      {title} <span className="text-ink-muted tabular">{columns[key].length}</span>
+                    </h2>
+                    <div className="space-y-3">
+                      {columns[key].map((o) => (
+                        <OrderCard key={o.orderId} order={o} restaurantId={restaurantId} />
+                      ))}
+                      {columns[key].length === 0 && <p className="py-12 text-center text-sm text-ink-muted">Nothing here</p>}
+                    </div>
+                  </section>
+                ))}
+              </div>
+              <p className="mt-6 text-xs text-ink-muted">
+                {liveOrders.isError ? `${errorMessage(liveOrders.error)} — retrying…` : "Updates every 5 seconds. Keep this tab open during service."}
+              </p>
+            </>
+          )}
+          {tab === "menu" && restaurant && <MenuEditor restaurantId={restaurant.id} canEdit={["OWNER", "MANAGER", "CATALOG_EDITOR"].includes(restaurant.staffRole)} />}
+          {tab === "outlet" && restaurant && <OutletSettings key={restaurant.id} restaurantId={restaurant.id} isOwner={restaurant.staffRole === "OWNER"} />}
+          {tab === "growth" && restaurant && <MerchantGrowthPanel restaurantId={restaurant.id} />}
+          {tab === "earnings" && restaurant && (
+            <div className="max-w-3xl">
+              <EarningsPanel
+                queryKey={["merchant-earnings", restaurant.id]}
+                load={() => api.getMerchantEarnings(restaurant.id)}
+                saveAccount={(account) => api.saveMerchantPayoutAccount(restaurant.id, account)}
+              />
+            </div>
+          )}
+          {tab === "history" &&
+            (history.isPending ? (
+              <div className="skeleton h-48" />
+            ) : (history.data ?? []).length === 0 ? (
+              <EmptyState title="No orders yet" />
+            ) : (
+              <ul className="rows max-w-3xl">
+                {(history.data ?? []).map((o) => (
+                  <li key={o.orderId} className="flex items-center justify-between gap-4 py-4">
+                    <span>
+                      <span className="font-medium text-ink">#{o.orderNumber}</span>
+                      <span className="text-ink-muted"> · {o.items.reduce((n, i) => n + i.quantity, 0)} items</span>
+                      <span className="block text-xs text-ink-muted">{formatTime(o.createdAt)}</span>
+                    </span>
+                    <span className="badge badge-neutral">{STATE_LABELS[o.fulfillmentState]}</span>
+                  </li>
+                ))}
+              </ul>
             ))}
-          </div>
-        )}
-        {tab === "menu" && restaurant && <MenuEditor restaurantId={restaurant.id} canEdit={["OWNER", "MANAGER", "CATALOG_EDITOR"].includes(restaurant.staffRole)} />}
-        {tab === "outlet" && restaurant && <OutletSettings key={restaurant.id} restaurantId={restaurant.id} isOwner={restaurant.staffRole === "OWNER"} />}
-        {tab === "growth" && restaurant && <MerchantGrowthPanel restaurantId={restaurant.id} />}
-        {tab === "earnings" && restaurant && (
-          <EarningsPanel
-            queryKey={["merchant-earnings", restaurant.id]}
-            load={() => api.getMerchantEarnings(restaurant.id)}
-            saveAccount={(account) => api.saveMerchantPayoutAccount(restaurant.id, account)}
-          />
-        )}
-        {tab === "history" && (
-          <ul className="divide-y divide-border rounded-2xl border border-border bg-white">
-            {(orders.data ?? []).map((o) => (
-              <li key={o.orderId} className="p-3 flex items-center justify-between text-sm">
-                <span>
-                  <b>#{o.orderNumber}</b> · {o.items.reduce((n, i) => n + i.quantity, 0)} items
-                  <span className="block text-[11px] text-text-secondary">{formatTime(o.createdAt)}</span>
-                </span>
-                <span className="text-xs font-bold">{STATE_LABELS[o.fulfillmentState]}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-        {orders.isError && (
-          <p className="text-xs text-red-700 flex items-center gap-1">
-            <X className="w-3 h-3" /> {errorMessage(orders.error)} — retrying…
-          </p>
-        )}
-        <p className="text-[11px] text-text-secondary flex items-center gap-1">
-          <Clock className="w-3 h-3" /> Auto-refreshing every 5 seconds. Keep this tab open during service hours.
-        </p>
-      </div>
+        </div>
+      </PortalBody>
     </>
   );
 }

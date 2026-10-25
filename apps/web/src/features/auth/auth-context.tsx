@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { ClerkProvider, useAuth as useClerkAuth } from "@clerk/nextjs";
 import { CLERK_ENABLED, CLERK_PUBLISHABLE_KEY } from "./clerk-config";
 import { useDemoAuthStore } from "./demo-auth-store";
@@ -17,38 +17,37 @@ const AuthContext = createContext<AuthApi | null>(null);
 
 function ClerkBridge({ children }: { children: React.ReactNode }) {
   const clerk = useClerkAuth();
-  const getToken = useCallback(() => clerk.getToken(), [clerk]);
+  // Clerk returns fresh function identities on every render. Everything downstream
+  // (ApiClient, the live-tracking stream, effects keyed on `api`) needs a stable
+  // getter, otherwise each render tears down and reopens connections.
+  const clerkRef = useRef(clerk);
+  clerkRef.current = clerk;
+  const getToken = useCallback(() => clerkRef.current.getToken(), []);
+  const signOut = useCallback(async () => {
+    await clerkRef.current.signOut();
+  }, []);
+
   const value = useMemo<AuthApi>(
-    () => ({
-      mode: "clerk",
-      isLoaded: clerk.isLoaded,
-      isSignedIn: !!clerk.isSignedIn,
-      getToken,
-      signOut: async () => {
-        await clerk.signOut();
-      },
-    }),
-    [clerk, getToken]
+    () => ({ mode: "clerk", isLoaded: clerk.isLoaded, isSignedIn: !!clerk.isSignedIn, getToken, signOut }),
+    [clerk.isLoaded, clerk.isSignedIn, getToken, signOut]
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
+const demoGetToken = async () => useDemoAuthStore.getState().persona?.token ?? null;
+const demoSignOut = async () => useDemoAuthStore.getState().signOut();
+
 function DemoBridge({ children }: { children: React.ReactNode }) {
   const persona = useDemoAuthStore((s) => s.persona);
-  const signOut = useDemoAuthStore((s) => s.signOut);
-  // Persisted state is only available after hydration; avoid flashing "signed out"
+  // The persona is persisted; load it after mount so SSR and the first client render agree
   const [hydrated, setHydrated] = useState(false);
-  useEffect(() => setHydrated(true), []);
+  useEffect(() => {
+    void Promise.resolve(useDemoAuthStore.persist.rehydrate()).then(() => setHydrated(true));
+  }, []);
 
   const value = useMemo<AuthApi>(
-    () => ({
-      mode: "demo",
-      isLoaded: hydrated,
-      isSignedIn: !!persona,
-      getToken: async () => useDemoAuthStore.getState().persona?.token ?? null,
-      signOut: async () => signOut(),
-    }),
-    [hydrated, persona, signOut]
+    () => ({ mode: "demo", isLoaded: hydrated, isSignedIn: hydrated && !!persona, getToken: demoGetToken, signOut: demoSignOut }),
+    [hydrated, persona]
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

@@ -15,7 +15,7 @@ export function CallButton({
   orderId,
   target,
   label,
-  className,
+  className = "btn btn-outline btn-sm",
 }: {
   orderId: string;
   target: "RIDER" | "CUSTOMER" | "RESTAURANT";
@@ -40,9 +40,9 @@ export function CallButton({
           setBusy(false);
         }
       }}
-      className={className ?? "flex items-center gap-1.5 px-3 py-2 rounded-xl border border-border text-xs font-bold"}
+      className={className}
     >
-      {busy ? <Spinner /> : <Phone className="w-4 h-4" />} {label}
+      {busy ? <Spinner /> : <Phone className="h-4 w-4" />} {label}
     </button>
   );
 }

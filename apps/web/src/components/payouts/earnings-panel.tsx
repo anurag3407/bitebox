@@ -2,20 +2,23 @@
 
 import React, { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Landmark, Wallet } from "lucide-react";
+import { Landmark } from "lucide-react";
 import type { Earnings } from "@startup/api-client";
-import { Spinner } from "@/components/ui/misc";
+import { Field } from "@/components/ui/field";
+import { PageSpinner, Spinner, Stat } from "@/components/ui/misc";
 import { useToast } from "@/components/ui/toast";
 import { errorMessage } from "@/lib/api";
 import { formatDateTime, formatRupees } from "@/lib/format";
 
-const STATUS: Record<string, string> = {
-  PENDING: "Scheduled",
-  MANUAL: "Bank transfer pending",
-  PROCESSING: "In transit",
-  PAID: "Paid",
-  FAILED: "Failed — support notified",
+const STATUS: Record<string, { label: string; badge: string }> = {
+  PENDING: { label: "Scheduled", badge: "badge-neutral" },
+  MANUAL: { label: "Bank transfer pending", badge: "badge-warn" },
+  PROCESSING: { label: "In transit", badge: "badge-neutral" },
+  PAID: { label: "Paid", badge: "badge-success" },
+  FAILED: { label: "Failed · support notified", badge: "badge-danger" },
 };
+
+const EMPTY_FORM = { accountHolderName: "", ifsc: "", accountNumber: "", confirm: "" };
 
 /** Earnings, bank account and payout history; shared by merchant owners and riders. */
 export function EarningsPanel({
@@ -30,49 +33,48 @@ export function EarningsPanel({
   const toast = useToast();
   const earnings = useQuery({ queryKey, queryFn: load });
   const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState({ accountHolderName: "", ifsc: "", accountNumber: "", confirm: "" });
+  const [form, setForm] = useState(EMPTY_FORM);
   const [busy, setBusy] = useState(false);
 
-  if (earnings.isPending) return <Spinner />;
-  if (!earnings.data) return <p className="text-sm text-red-700">{errorMessage(earnings.error)}</p>;
+  if (earnings.isPending) return <PageSpinner />;
+  if (!earnings.data) return <p className="notice notice-danger">{errorMessage(earnings.error)}</p>;
   const e = earnings.data;
+  const mismatch = form.confirm.length > 0 && form.accountNumber !== form.confirm;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-12">
       <div className="grid grid-cols-2 gap-3">
-        <div className="p-4 rounded-2xl border border-border bg-white">
-          <p className="text-[11px] font-bold uppercase text-text-secondary">Today</p>
-          <p className="text-2xl font-black">{formatRupees(e.todayPaise)}</p>
-          <p className="text-xs text-text-secondary">{e.todayOrders} orders</p>
-        </div>
-        <div className="p-4 rounded-2xl border border-border bg-white">
-          <p className="text-[11px] font-bold uppercase text-text-secondary">Next payout (Monday)</p>
-          <p className="text-2xl font-black">{formatRupees(e.unsettledPaise)}</p>
-          <p className="text-xs text-text-secondary">{e.unsettledOrders} orders · minimum ₹100</p>
-        </div>
+        <Stat label="Today" value={formatRupees(e.todayPaise)} sub={`${e.todayOrders} orders`} />
+        <Stat label="Next payout · Monday" value={formatRupees(e.unsettledPaise)} sub={`${e.unsettledOrders} orders · ₹100 minimum`} />
       </div>
 
-      <section className="p-4 rounded-2xl border border-border bg-white">
-        <div className="flex items-center justify-between">
-          <h3 className="font-bold flex items-center gap-2">
-            <Landmark className="w-4 h-4" /> Bank account
+      <section>
+        <div className="flex items-center justify-between gap-4">
+          <h3 className="flex items-center gap-2 text-base font-semibold text-ink">
+            <Landmark className="h-4 w-4" /> Bank account
           </h3>
-          <button onClick={() => setEditing(!editing)} className="text-xs font-bold text-brand">
-            {e.account ? "Change" : "Add"}
+          <button
+            onClick={() => {
+              setEditing(!editing);
+              setForm(EMPTY_FORM);
+            }}
+            className="btn btn-ghost btn-sm -mr-4"
+          >
+            {editing ? "Cancel" : e.account ? "Change" : "Add"}
           </button>
         </div>
         {e.account && !editing && (
-          <p className="text-sm mt-2">
-            {e.account.accountHolderName} · {e.account.ifsc} · ••••{e.account.accountLast4}
+          <p className="mt-3 text-[15px] text-ink">
+            {e.account.accountHolderName} <span className="text-ink-muted">· {e.account.ifsc} · ••••{e.account.accountLast4}</span>
           </p>
         )}
-        {!e.account && !editing && <p className="text-xs text-amber-800 mt-2">Add a bank account to receive automatic weekly payouts.</p>}
+        {!e.account && !editing && <p className="notice notice-warn mt-4">Add a bank account to receive automatic weekly payouts.</p>}
         {editing && (
           <form
             onSubmit={async (ev) => {
               ev.preventDefault();
               if (form.accountNumber !== form.confirm) {
-                toast("Account numbers do not match", "error");
+                toast("Account numbers don't match", "error");
                 return;
               }
               setBusy(true);
@@ -80,7 +82,7 @@ export function EarningsPanel({
                 await saveAccount({ accountHolderName: form.accountHolderName, ifsc: form.ifsc.toUpperCase(), accountNumber: form.accountNumber });
                 toast("Bank account saved", "success");
                 setEditing(false);
-                setForm({ accountHolderName: "", ifsc: "", accountNumber: "", confirm: "" });
+                setForm(EMPTY_FORM);
                 earnings.refetch();
               } catch (err) {
                 toast(errorMessage(err), "error");
@@ -88,37 +90,47 @@ export function EarningsPanel({
                 setBusy(false);
               }
             }}
-            className="grid sm:grid-cols-2 gap-2 mt-3"
+            className="mt-6 grid gap-5 sm:grid-cols-2"
           >
-            <input required placeholder="Account holder name" value={form.accountHolderName} onChange={(x) => setForm({ ...form, accountHolderName: x.target.value })} className="p-2.5 rounded-xl border border-border text-sm" />
-            <input required placeholder="IFSC" value={form.ifsc} onChange={(x) => setForm({ ...form, ifsc: x.target.value })} className="p-2.5 rounded-xl border border-border text-sm uppercase" />
-            <input required inputMode="numeric" autoComplete="off" placeholder="Account number" value={form.accountNumber} onChange={(x) => setForm({ ...form, accountNumber: x.target.value.replace(/\D/g, "") })} className="p-2.5 rounded-xl border border-border text-sm" />
-            <input required inputMode="numeric" autoComplete="off" placeholder="Re-enter account number" value={form.confirm} onChange={(x) => setForm({ ...form, confirm: x.target.value.replace(/\D/g, "") })} className="p-2.5 rounded-xl border border-border text-sm" />
-            <button disabled={busy} className="sm:col-span-2 py-2.5 rounded-xl bg-brand text-white text-sm font-bold">
-              Save securely
-            </button>
+            <Field label="Account holder name">
+              <input required value={form.accountHolderName} onChange={(x) => setForm({ ...form, accountHolderName: x.target.value })} className="input" />
+            </Field>
+            <Field label="IFSC">
+              <input required value={form.ifsc} onChange={(x) => setForm({ ...form, ifsc: x.target.value })} className="input uppercase" />
+            </Field>
+            <Field label="Account number">
+              <input required inputMode="numeric" autoComplete="off" value={form.accountNumber} onChange={(x) => setForm({ ...form, accountNumber: x.target.value.replace(/\D/g, "") })} className="input" />
+            </Field>
+            <Field label="Re-enter account number" hint={mismatch ? "Doesn't match yet" : undefined}>
+              <input required inputMode="numeric" autoComplete="off" value={form.confirm} onChange={(x) => setForm({ ...form, confirm: x.target.value.replace(/\D/g, "") })} className="input" />
+            </Field>
+            <div className="sm:col-span-2">
+              <button disabled={busy || mismatch} className="btn btn-primary">
+                {busy && <Spinner />} Save account
+              </button>
+            </div>
           </form>
         )}
       </section>
 
       <section>
-        <h3 className="font-bold mb-2 flex items-center gap-2">
-          <Wallet className="w-4 h-4" /> Payouts
-        </h3>
+        <h3 className="text-base font-semibold text-ink">Payouts</h3>
         {e.payouts.length === 0 ? (
-          <p className="text-xs text-text-secondary">No payouts yet. Earnings are settled every Monday for deliveries up to Sunday.</p>
+          <p className="mt-3 text-sm text-ink-muted">No payouts yet. Earnings are settled every Monday for deliveries up to Sunday.</p>
         ) : (
-          <ul className="divide-y divide-border rounded-2xl border border-border bg-white">
+          <ul className="rows mt-3">
             {e.payouts.map((p) => (
-              <li key={p.id} className="p-3 flex items-center justify-between text-sm">
-                <span>
-                  <b>{formatRupees(p.amountPaise)}</b> · {p.orderCount} orders
-                  <span className="block text-[11px] text-text-secondary">
+              <li key={p.id} className="flex items-center justify-between gap-4 py-4">
+                <div>
+                  <p className="text-[15px] text-ink tabular">
+                    {formatRupees(p.amountPaise)} <span className="text-ink-muted">· {p.orderCount} orders</span>
+                  </p>
+                  <p className="mt-0.5 text-xs text-ink-muted">
                     {formatDateTime(p.createdAt)}
                     {p.utr && ` · UTR ${p.utr}`}
-                  </span>
-                </span>
-                <span className={`text-xs font-bold ${p.status === "PAID" ? "text-success" : p.status === "FAILED" ? "text-red-700" : "text-text-secondary"}`}>{STATUS[p.status]}</span>
+                  </p>
+                </div>
+                <span className={`badge ${STATUS[p.status]?.badge ?? "badge-neutral"}`}>{STATUS[p.status]?.label ?? p.status}</span>
               </li>
             ))}
           </ul>

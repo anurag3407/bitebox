@@ -325,7 +325,7 @@ export async function handlePayoutSubmit(job: ClaimedJob, gateway = new Razorpay
       fundAccountId,
       amountPaise: payout.amountPaise,
       idempotencyKey: payoutId,
-      narration: `ZomatoFresh payout ${payout.orderCount} orders`,
+      narration: `BiteBox payout ${payout.orderCount} orders`,
     });
     await applyPayoutStatus(payoutId, result);
   } catch (err) {

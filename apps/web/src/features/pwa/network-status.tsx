@@ -23,8 +23,8 @@ export function NetworkStatusBanner() {
   const online = useOnline();
   if (online) return null;
   return (
-    <div role="status" className="sticky top-0 z-[70] bg-text-primary text-white text-xs font-semibold py-2 px-4 flex items-center justify-center gap-2">
-      <WifiOff className="w-3.5 h-3.5" /> You are offline. Showing saved data where possible.
+    <div role="status" className="sticky top-0 z-[70] flex items-center justify-center gap-2 bg-ink px-4 py-2.5 pt-[calc(0.625rem+env(safe-area-inset-top))] text-xs font-medium text-white">
+      <WifiOff className="h-3.5 w-3.5" /> You&apos;re offline. Showing saved data where possible.
     </div>
   );
 }

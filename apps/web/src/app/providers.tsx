@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ApiError } from "@startup/api-client";
 import { AuthProvider } from "@/features/auth/auth-context";
 import { ToastProvider } from "@/components/ui/toast";
+import { rehydrateClientStores } from "@/features/hydration";
 import { ServiceWorkerManager } from "@/features/pwa/service-worker";
 import { NetworkStatusBanner } from "@/features/pwa/network-status";
 
@@ -22,6 +23,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
         },
       })
   );
+
+  useEffect(() => rehydrateClientStores(), []);
 
   return (
     <AuthProvider>
