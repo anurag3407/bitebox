@@ -32,6 +32,7 @@ export const GET = route(async (req, _ctx, requestId) => {
       email: user.email,
       phone: user.phone,
       role,
+      language: user.language ?? "en",
       rider: riderInfo,
       restaurants,
     },

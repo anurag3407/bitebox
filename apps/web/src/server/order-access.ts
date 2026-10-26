@@ -29,16 +29,21 @@ export function shapeOrderForViewer(order: OrderDetailDto, viewer: OrderViewer):
     case "ADMIN":
       return order;
     case "CUSTOMER": {
-      // The pickup code is the restaurant's proof of handover
-      const { pickupCode: _p, customerId: _c, ...rest } = order;
-      return { ...rest, rider: rest.rider ? { ...rest.rider, phone: undefined } : undefined };
+      // Pickup orders show the code at the counter; delivery pickup codes stay private
+      const { pickupCode, customerId: _c, ...rest } = order;
+      return {
+        ...rest,
+        pickupCode: order.orderMode === "PICKUP" ? pickupCode : undefined,
+        deliveryOtp: order.orderMode === "PICKUP" ? undefined : rest.deliveryOtp,
+        rider: rest.rider ? { ...rest.rider, phone: undefined } : undefined,
+      };
     }
     case "MERCHANT": {
-      const { deliveryOtp: _d, customerId: _c, ...rest } = order;
+      const { deliveryOtp: _d, customerId: _c, recipientPhone: _r, ...rest } = order;
       return { ...rest, deliveryAddress: { ...rest.deliveryAddress, contactPhone: undefined } };
     }
     case "RIDER": {
-      const { deliveryOtp: _d, pickupCode: _p, customerId: _c, breakdown, ...rest } = order;
+      const { deliveryOtp: _d, pickupCode: _p, customerId: _c, recipientPhone: _r, breakdown, ...rest } = order;
       // Riders see what to collect/deliver, not the customer's bill or number (calls are bridged)
       return {
         ...rest,

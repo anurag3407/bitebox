@@ -4,10 +4,12 @@ import { Footer } from "@/components/layout/Footer";
 import { CartBar } from "@/components/cart/CartBar";
 import { MobileTabBar } from "@/components/layout/MobileTabBar";
 import { InstallPrompt } from "@/features/pwa/install-prompt";
+import { ReferralCapture } from "@/features/referrals/referral-capture";
 
 export default function CustomerLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen flex-col bg-white">
+      <ReferralCapture />
       <Header />
       <main className="flex-1 pb-36 sm:pb-0">{children}</main>
       <CartBar />

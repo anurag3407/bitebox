@@ -77,6 +77,8 @@ export const GET = route(async (req, _ctx, requestId) => {
             isAvailable: d.is_available,
             imageUrl: d.image_url ?? undefined,
             isBestseller: d.is_bestseller,
+            allergens: [],
+            spiceLevel: 0,
             variants: [],
             modifierGroups: [],
           },

@@ -7,7 +7,13 @@ import { FulfillmentState } from "@startup/contracts";
 import type { AdminOrderRow } from "@startup/api-client";
 import { PortalBody, PortalHeader, RoleGate } from "@/components/portal/role-gate";
 import { ApplicationsTab } from "@/components/admin/applications";
+import { IssuesTab } from "@/components/admin/issues";
+import { KycTab } from "@/components/admin/kyc";
+import { AdminOperationsTab } from "@/components/admin/operations";
+import { AdminCorporateTab } from "@/components/admin/corporate";
+import { AdminInsuranceTab } from "@/components/admin/insurance";
 import { PayoutsTab } from "@/components/admin/payouts";
+import { ReferralsTab } from "@/components/admin/referrals";
 import { SupportTab } from "@/components/admin/support";
 import { UsersTab } from "@/components/admin/users";
 import { Field, MoneyInput } from "@/components/ui/field";
@@ -146,13 +152,19 @@ function OrderDrawer({ order, onClose }: { order: AdminOrderRow; onClose: () => 
   );
 }
 
-type AdminTab = "orders" | "support" | "applications" | "users" | "payouts";
+type AdminTab = "orders" | "support" | "issues" | "kyc" | "applications" | "referrals" | "users" | "payouts" | "operations" | "corporate" | "insurance";
 const ADMIN_TABS: Array<[AdminTab, string]> = [
   ["orders", "Orders"],
   ["support", "Support"],
+  ["issues", "Problems"],
+  ["kyc", "Rider KYC"],
   ["applications", "Applications"],
+  ["referrals", "Referrals"],
   ["users", "Users"],
   ["payouts", "Payouts"],
+  ["operations", "Ops"],
+  ["corporate", "Corporate"],
+  ["insurance", "Insurance"],
 ];
 
 function AdminConsole() {
@@ -171,9 +183,15 @@ function AdminConsole() {
         <div className="pt-8">
           {tab === "orders" && <OrdersBoard />}
           {tab === "support" && <SupportTab />}
+          {tab === "issues" && <IssuesTab />}
+          {tab === "kyc" && <KycTab />}
           {tab === "applications" && <ApplicationsTab />}
+          {tab === "referrals" && <ReferralsTab />}
           {tab === "users" && <UsersTab />}
           {tab === "payouts" && <PayoutsTab />}
+          {tab === "operations" && <AdminOperationsTab />}
+          {tab === "corporate" && <AdminCorporateTab />}
+          {tab === "insurance" && <AdminInsuranceTab />}
         </div>
       </PortalBody>
     </>

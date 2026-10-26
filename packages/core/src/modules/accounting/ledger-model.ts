@@ -13,6 +13,13 @@ export const LedgerAccountType = {
   MEAL_PASS_DEFERRED_REVENUE: "MEAL_PASS_DEFERRED_REVENUE",
   CAPTAIN_PAYABLE: "CAPTAIN_PAYABLE",
   CORPORATE_RECEIVABLE: "CORPORATE_RECEIVABLE",
+  WALLET_LIABILITY: "WALLET_LIABILITY",
+  GIFT_CARD_LIABILITY: "GIFT_CARD_LIABILITY",
+  DONATION_PAYABLE: "DONATION_PAYABLE",
+  GOODWILL_EXPENSE: "GOODWILL_EXPENSE",
+  RIDER_INCENTIVE_EXPENSE: "RIDER_INCENTIVE_EXPENSE",
+  RIDER_INSURANCE_EXPENSE: "RIDER_INSURANCE_EXPENSE",
+  CASH_IN_TRANSIT: "CASH_IN_TRANSIT",
 } as const;
 export type LedgerAccountType = (typeof LedgerAccountType)[keyof typeof LedgerAccountType];
 
@@ -72,6 +79,7 @@ export class LedgerEngine {
     tipPaise?: number;
     commissionRateBasisPoints?: number; // e.g. 1500 = 15%
     merchantOrderFeePaise?: number;
+    merchantFundedDiscountPaise?: number;
   }): LedgerEntry[] {
     const commissionBp = input.commissionRateBasisPoints ?? 1500;
     const discountPaise = input.discountPaise ?? 0;
@@ -80,11 +88,19 @@ export class LedgerEngine {
     const merchantOrderFeePaise = Math.max(0, Math.round(input.merchantOrderFeePaise ?? 0));
 
     const commissionPaise = SettlementCalculator.commission(input.subtotalPaise, commissionBp);
-    const merchantPayable = SettlementCalculator.merchantEarningAfterFees(
+    const merchantBase = SettlementCalculator.merchantEarningAfterFees(
       input,
       commissionPaise,
       merchantOrderFeePaise
     );
+    // Merchant-funded offers reduce merchant payable rather than platform revenue
+    const merchantFundedDiscount = Math.min(
+      discountPaise,
+      Math.max(0, Math.round(input.merchantFundedDiscountPaise ?? 0)),
+      merchantBase
+    );
+    const merchantPayable = merchantBase - merchantFundedDiscount;
+    const platformDiscountPaise = discountPaise - merchantFundedDiscount;
     const platformRevenue = SettlementCalculator.platformRevenueAfterFees(
       input,
       commissionPaise,
@@ -101,7 +117,7 @@ export class LedgerEngine {
       },
       {
         account: LedgerAccountType.DISCOUNT_EXPENSE,
-        debitPaise: discountPaise,
+        debitPaise: platformDiscountPaise,
         creditPaise: 0,
         description: "Platform-funded coupon discount",
       },

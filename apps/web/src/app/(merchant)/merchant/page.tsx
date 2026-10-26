@@ -3,15 +3,20 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "next/navigation";
-import { Store, Volume2, VolumeX } from "lucide-react";
+import { MessageCircle, Printer, Store, Volume2, VolumeX } from "lucide-react";
 import { OrderDetailDto } from "@startup/contracts";
 import { PortalBody, PortalHeader, RoleGate } from "@/components/portal/role-gate";
+import { OrderChat } from "@/components/orders/order-chat";
 import { MenuEditor } from "@/components/merchant/menu-editor";
+import { MerchantDiningPanel } from "@/components/merchant/dining-panel";
+import { MerchantReviewsPanel } from "@/components/merchant/reviews-panel";
+import { PromotionsPanel } from "@/components/merchant/promotions-panel";
+import { MerchantSurplusPanel } from "@/components/merchant/surplus-panel";
 import { MerchantGrowthPanel } from "@/components/merchant/merchant-growth-panel";
 import { OutletSettings } from "@/components/merchant/outlet-settings";
 import { EarningsPanel } from "@/components/payouts/earnings-panel";
 import { Modal } from "@/components/ui/modal";
-import { Toggle } from "@/components/ui/field";
+import { Field, Toggle } from "@/components/ui/field";
 import { EmptyState, PageSpinner, Spinner } from "@/components/ui/misc";
 import { useToast } from "@/components/ui/toast";
 import { errorMessage, useApi } from "@/lib/api";
@@ -33,6 +38,55 @@ function Countdown({ deadline }: { deadline?: string }) {
   return <span className={`badge tabular ${left < 30 ? "animate-pulse bg-danger text-white" : "badge-warn"}`}>{left > 0 ? `${left}s left` : "Expired"}</span>;
 }
 
+function printKot(order: OrderDetailDto) {
+  const sheet = window.open("", "_blank", "width=420,height=640");
+  if (!sheet) return;
+  const doc = sheet.document;
+  doc.title = `KOT ${order.orderNumber}`;
+  const style = doc.createElement("style");
+  style.textContent =
+    "body{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;padding:20px;font-size:13px;color:#111}" +
+    "h1{font-size:18px;margin:0 0 2px}h2{font-size:12px;font-weight:500;color:#555;margin:0 0 18px}" +
+    ".item{display:flex;gap:8px;margin:0 0 10px;align-items:flex-start}.qty{font-weight:700;min-width:26px}" +
+    ".meta{color:#555;font-size:12px;margin-top:2px}.note{border-top:1px dashed #999;margin-top:16px;padding-top:12px}" +
+    ".itemnote{color:#9a4a00}.foot{margin-top:24px;font-size:11px;color:#777}";
+  doc.head.appendChild(style);
+  const el = (tag: string, text: string, className?: string) => {
+    const node = doc.createElement(tag);
+    node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  };
+  doc.body.appendChild(el("h1", `KOT · #${order.orderNumber}`));
+  doc.body.appendChild(
+    el(
+      "h2",
+      `${order.orderMode === "PICKUP" ? "PICKUP" : "DELIVERY"} · ${new Date(order.createdAt).toLocaleTimeString("en-IN", {
+        hour: "numeric",
+        minute: "2-digit",
+      })}`
+    )
+  );
+  for (const item of order.items) {
+    const row = doc.createElement("div");
+    row.className = "item";
+    row.appendChild(el("span", `${item.quantity}×`, "qty"));
+    const detail = doc.createElement("div");
+    detail.appendChild(el("div", item.name));
+    const extras = [item.variantName, ...item.selectedOptionNames].filter(Boolean).join(", ");
+    if (extras) detail.appendChild(el("div", extras, "meta"));
+    if (item.instructions) detail.appendChild(el("div", `“${item.instructions}”`, "meta itemnote"));
+    row.appendChild(detail);
+    doc.body.appendChild(row);
+  }
+  if (order.instructions) doc.body.appendChild(el("div", `Customer note: ${order.instructions}`, "note itemnote"));
+  if (!order.cutleryOptIn) doc.body.appendChild(el("div", "NO CUTLERY", "note itemnote"));
+  doc.body.appendChild(el("div", "BiteBox kitchen ticket · no prices on KOT", "foot"));
+  sheet.focus();
+  sheet.print();
+  setTimeout(() => sheet.close(), 200);
+}
+
 function OrderCard({ order, restaurantId }: { order: OrderDetailDto; restaurantId: string }) {
   const api = useApi();
   const toast = useToast();
@@ -40,6 +94,9 @@ function OrderCard({ order, restaurantId }: { order: OrderDetailDto; restaurantI
   const [prep, setPrep] = useState(15);
   const [busy, setBusy] = useState(false);
   const [rejecting, setRejecting] = useState(false);
+  const [handoverOpen, setHandoverOpen] = useState(false);
+  const [pickupInput, setPickupInput] = useState("");
+  const [chatOpen, setChatOpen] = useState(false);
 
   const run = async (fn: () => Promise<void>, ok: string) => {
     setBusy(true);
@@ -56,11 +113,15 @@ function OrderCard({ order, restaurantId }: { order: OrderDetailDto; restaurantI
 
   const state = order.fulfillmentState;
   const inKitchen = state === "ACCEPTED" || state === "PREPARING" || state === "READY_FOR_PICKUP";
+  const terminal = state === "DELIVERED" || state === "CANCELLED" || state === "DELIVERY_FAILED";
   return (
     <article className={`space-y-5 rounded-3xl bg-white p-5 ${state === "AWAITING_MERCHANT" ? "shadow-pop ring-1 ring-ink" : "shadow-soft"}`}>
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="font-semibold text-ink">#{order.orderNumber}</p>
+          <p className="flex items-center gap-2 font-semibold text-ink">
+            #{order.orderNumber}
+            {order.orderMode === "PICKUP" && <span className="badge badge-neutral">Pickup</span>}
+          </p>
           <p className="text-xs text-ink-muted">{timeAgo(order.createdAt)}</p>
         </div>
         {state === "AWAITING_MERCHANT" ? <Countdown deadline={order.merchantResponseDeadlineAt} /> : <span className="badge badge-neutral">{STATE_LABELS[state]}</span>}
@@ -77,6 +138,12 @@ function OrderCard({ order, restaurantId }: { order: OrderDetailDto; restaurantI
         ))}
       </ul>
       {order.instructions && <p className="notice notice-warn">Note: {order.instructions}</p>}
+      {order.recipientName && (
+        <p className="text-xs text-ink-muted">
+          Gift order for <span className="font-medium text-ink">{order.recipientName}</span>
+          {order.giftMessage ? ` · “${order.giftMessage}”` : ""}
+        </p>
+      )}
 
       {inKitchen && order.pickupCode && (
         <div className="flex items-center justify-between rounded-2xl bg-subtle px-4 py-3 text-sm">
@@ -88,6 +155,15 @@ function OrderCard({ order, restaurantId }: { order: OrderDetailDto; restaurantI
       )}
 
       <p className="text-sm text-ink-muted">Item total {formatRupees(order.breakdown.subtotalPaise)}</p>
+
+      <div className="flex flex-wrap gap-2">
+        <button className="btn btn-secondary btn-sm" disabled={terminal} onClick={() => setChatOpen(true)}>
+          <MessageCircle className="h-4 w-4" /> Message customer
+        </button>
+        <button className="btn btn-outline btn-sm" onClick={() => printKot(order)}>
+          <Printer className="h-4 w-4" /> Print KOT
+        </button>
+      </div>
 
       {state === "AWAITING_MERCHANT" && (
         <div className="space-y-4 border-t border-line pt-5">
@@ -128,6 +204,20 @@ function OrderCard({ order, restaurantId }: { order: OrderDetailDto; restaurantI
           </button>
         </div>
       )}
+      {state === "READY_FOR_PICKUP" && order.orderMode === "PICKUP" && (
+        <div className="border-t border-line pt-5">
+          <button
+            disabled={busy}
+            onClick={() => {
+              setPickupInput("");
+              setHandoverOpen(true);
+            }}
+            className="btn btn-success btn-block"
+          >
+            Hand over to customer
+          </button>
+        </div>
+      )}
       {inKitchen && (
         <button onClick={() => setRejecting(true)} className="text-xs text-ink-muted underline underline-offset-4 hover:text-ink">
           Can&apos;t fulfil this order?
@@ -151,15 +241,60 @@ function OrderCard({ order, restaurantId }: { order: OrderDetailDto; restaurantI
           ))}
         </ul>
       </Modal>
+
+      <Modal
+        open={chatOpen}
+        onClose={() => setChatOpen(false)}
+        size="lg"
+        title="Message customer"
+        description={`About order #${order.orderNumber}`}
+      >
+        <OrderChat orderId={order.orderId} channel="CUSTOMER_MERCHANT" viewer="MERCHANT" compact />
+      </Modal>
+
+      <Modal
+        open={handoverOpen}
+        onClose={() => setHandoverOpen(false)}
+        size="sm"
+        title="Hand over this order"
+        description="Ask the customer for their 4-digit pickup code."
+        footer={
+          <button
+            disabled={busy || pickupInput.length < 4}
+            onClick={() => {
+              setHandoverOpen(false);
+              run(() => api.merchantHandoverPickup(order.orderId, pickupInput), "Order collected. Well done.");
+            }}
+            className="btn btn-success btn-block"
+          >
+            {busy && <Spinner />} Confirm handover
+          </button>
+        }
+      >
+        <Field label="Pickup code">
+          <input
+            value={pickupInput}
+            onChange={(e) => setPickupInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            className="input h-16 text-center text-2xl font-semibold tracking-[0.5em]"
+            placeholder="••••"
+          />
+        </Field>
+      </Modal>
     </article>
   );
 }
 
-type Tab = "live" | "menu" | "outlet" | "growth" | "earnings" | "history";
+type Tab = "live" | "menu" | "dining" | "reviews" | "promotions" | "surplus" | "outlet" | "growth" | "earnings" | "history";
 const ALL_STAFF = ["OWNER", "MANAGER", "KITCHEN", "CATALOG_EDITOR"];
 const TABS: Array<{ id: Tab; label: string; roles: string[] }> = [
   { id: "live", label: "Live orders", roles: ALL_STAFF },
   { id: "menu", label: "Menu", roles: ALL_STAFF },
+  { id: "dining", label: "Dine-in", roles: ALL_STAFF },
+  { id: "reviews", label: "Reviews", roles: ALL_STAFF },
+  { id: "promotions", label: "Promotions", roles: ["OWNER", "MANAGER"] },
+  { id: "surplus", label: "Rescue", roles: ["OWNER", "MANAGER"] },
   { id: "history", label: "History", roles: ALL_STAFF },
   { id: "outlet", label: "Outlet & staff", roles: ["OWNER", "MANAGER"] },
   { id: "growth", label: "Growth", roles: ["OWNER"] },
@@ -345,6 +480,10 @@ function MerchantConsole() {
             </>
           )}
           {tab === "menu" && restaurant && <MenuEditor restaurantId={restaurant.id} canEdit={["OWNER", "MANAGER", "CATALOG_EDITOR"].includes(restaurant.staffRole)} />}
+          {tab === "dining" && restaurant && <MerchantDiningPanel restaurantId={restaurant.id} />}
+          {tab === "reviews" && restaurant && <MerchantReviewsPanel restaurantId={restaurant.id} />}
+          {tab === "promotions" && restaurant && <PromotionsPanel restaurantId={restaurant.id} />}
+          {tab === "surplus" && restaurant && <MerchantSurplusPanel restaurantId={restaurant.id} />}
           {tab === "outlet" && restaurant && <OutletSettings key={restaurant.id} restaurantId={restaurant.id} isOwner={restaurant.staffRole === "OWNER"} />}
           {tab === "growth" && restaurant && <MerchantGrowthPanel restaurantId={restaurant.id} />}
           {tab === "earnings" && restaurant && (

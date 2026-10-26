@@ -11,6 +11,7 @@ import {
 } from "@startup/contracts";
 import { OpeningHoursPolicy } from "@startup/core";
 import { getDb, getDbPool } from "../client.js";
+import { SponsorshipRepository } from "./sponsorship.repository.js";
 import {
   itemVariants,
   menuCategories,
@@ -77,6 +78,7 @@ function toSummary(r: RestaurantRow, extras: { distanceMeters?: number; at?: Dat
     isServiceable:
       extras.distanceMeters !== undefined ? extras.distanceMeters <= r.maxDeliveryRadiusMeters : undefined,
     isFavorite: extras.favoriteIds ? extras.favoriteIds.has(r.id) : undefined,
+    hygieneRating: r.hygieneRating ?? undefined,
   };
 }
 
@@ -112,6 +114,9 @@ function mapRawRestaurant(row: any): RestaurantRow {
     gstin: row.gstin,
     fssaiLicenseNumber: row.fssai_license_number,
     description: row.description,
+    hygieneRating: row.hygiene_rating ?? null,
+    amenities: row.amenities ?? [],
+    galleryJson: row.gallery_json ?? [],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -182,10 +187,18 @@ export class RestaurantRepository {
       list = list.filter((r) => r.deliveryTimeMaxMinutes <= filters.maxDeliveryMinutes!);
     }
 
+    const sponsoredIds = await SponsorshipRepository.activeRestaurantIds();
+    if (sponsoredIds.size > 0) {
+      list = list.map((restaurant) =>
+        sponsoredIds.has(restaurant.id) ? { ...restaurant, isSponsored: true } : restaurant
+      );
+    }
+
     const sortBy = filters.sortBy ?? "relevance";
     const comparators: Record<string, (a: RestaurantSummaryDto, b: RestaurantSummaryDto) => number> = {
       relevance: (a, b) =>
-        b.rating * 2 - (b.distanceMeters ?? 0) / 2000 - (a.rating * 2 - (a.distanceMeters ?? 0) / 2000),
+        b.rating * 2 + (b.isSponsored ? 0.8 : 0) - (b.distanceMeters ?? 0) / 2000 -
+        (a.rating * 2 + (a.isSponsored ? 0.8 : 0) - (a.distanceMeters ?? 0) / 2000),
       distance: (a, b) => (a.distanceMeters ?? 0) - (b.distanceMeters ?? 0),
       rating: (a, b) => b.rating - a.rating || b.ratingCount - a.ratingCount,
       delivery_time: (a, b) => a.deliveryTimeMinMinutes - b.deliveryTimeMinMinutes,
@@ -201,8 +214,16 @@ export class RestaurantRepository {
     return { restaurants: page, nextOffset: offset + limit < list.length ? offset + limit : null };
   }
 
-  static async findBySlug(slug: string, now = new Date()): Promise<RestaurantDetailDto | null> {
-    const db = getDb();
+  static async summariesByIds(ids: string[], now = new Date()): Promise<RestaurantSummaryDto[]> {
+    if (ids.length === 0) return [];
+    const res = await getDbPool().query(`SELECT r.* FROM restaurants r WHERE r.id = ANY($1::uuid[])`, [ids]);
+    const byId = new Map(
+      res.rows.map((row) => [row.id as string, toSummary(mapRawRestaurant(row), { distanceMeters: undefined, at: now })])
+    );
+    return ids.map((id) => byId.get(id)).filter((r): r is RestaurantSummaryDto => Boolean(r));
+  }
+
+  static async findBySlug(slug: string, now = new Date()): Promise<RestaurantDetailDto | null> {    const db = getDb();
     const [restaurant] = await db
       .select()
       .from(restaurants)
@@ -288,6 +309,10 @@ export class RestaurantRepository {
             isAvailable: item.isAvailable,
             imageUrl: item.imageUrl ?? undefined,
             isBestseller: item.isBestseller,
+            allergens: item.allergens ?? [],
+            nutrition: (item.nutritionJson as Record<string, number> | null) ?? undefined,
+            spiceLevel: item.spiceLevel,
+            serves: item.serves ?? undefined,
             variants: itemVars,
             modifierGroups: itemGroups,
           };
@@ -308,6 +333,8 @@ export class RestaurantRepository {
       latitude: restaurant.latitude,
       longitude: restaurant.longitude,
       openingHours: restaurant.openingHours ?? undefined,
+      amenities: restaurant.amenities ?? [],
+      gallery: (restaurant.galleryJson as string[] | null) ?? [],
       categories: populatedCategories,
     };
   }

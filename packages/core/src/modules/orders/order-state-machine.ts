@@ -29,6 +29,7 @@ export class OrderStateMachine {
     ],
     [FulfillmentState.READY_FOR_PICKUP]: [
       FulfillmentState.PICKED_UP,
+      FulfillmentState.DELIVERED, // self-pickup: the customer collects at the counter
       FulfillmentState.CANCELLED,
     ],
     [FulfillmentState.PICKED_UP]: [

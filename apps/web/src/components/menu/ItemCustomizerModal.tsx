@@ -167,6 +167,38 @@ export function ItemCustomizerModal({ item, isOpen, onClose, onConfirm }: ItemCu
       }
     >
       <div className="space-y-8 pb-2">
+        {(item.serves || item.nutrition?.calories || item.spiceLevel || item.allergens.length > 0) && (
+          <div className="space-y-3">
+            <div className="flex flex-wrap gap-1.5">
+              {item.serves && <span className="badge badge-neutral">Serves {item.serves}</span>}
+              {item.nutrition?.calories && <span className="badge badge-neutral">{item.nutrition.calories} kcal</span>}
+              {item.spiceLevel ? (
+                <span className="badge badge-warn">{["", "Mild", "Spicy", "Extra spicy"][item.spiceLevel]}</span>
+              ) : null}
+              {item.allergens.map((a) => (
+                <span key={a} className="badge badge-danger">
+                  Contains {a.toLowerCase()}
+                </span>
+              ))}
+            </div>
+            {item.nutrition && (item.nutrition.proteinG || item.nutrition.carbsG || item.nutrition.fatG) && (
+              <dl className="grid grid-cols-3 gap-2 rounded-2xl bg-subtle p-3 text-center">
+                {[
+                  ["Protein", item.nutrition.proteinG],
+                  ["Carbs", item.nutrition.carbsG],
+                  ["Fat", item.nutrition.fatG],
+                ].map(([label, value]) =>
+                  value !== undefined ? (
+                    <div key={String(label)}>
+                      <dt className="text-[10px] uppercase tracking-wide text-ink-muted">{label}</dt>
+                      <dd className="mt-0.5 text-sm font-medium text-ink tabular">{value} g</dd>
+                    </div>
+                  ) : null
+                )}
+              </dl>
+            )}
+          </div>
+        )}
         {item.variants.length > 0 && (
           <section>
             {groupHeader("Portion", "Choose one", true)}

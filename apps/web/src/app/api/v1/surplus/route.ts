@@ -22,7 +22,29 @@ const CreateListing = z.object({
 export const GET = route(async (req, _ctx, requestId) => {
   const { clusterId } = parseQuery(req, Query);
   const listings = await SurplusRepository.listActive(clusterId);
-  return apiSuccess({ listings }, 200, { requestId });
+  return apiSuccess(
+    {
+      listings: listings.map((l) => ({
+        id: l.id,
+        title: l.title,
+        restaurantId: l.restaurant_id,
+        restaurantName: l.restaurant_name,
+        restaurantSlug: l.restaurant_slug,
+        restaurantImageUrl: l.restaurant_image_url ?? undefined,
+        restaurantCuisines: l.restaurant_cuisines ?? [],
+        restaurantRating: l.restaurant_rating ?? 0,
+        restaurantAddress: l.restaurant_address ?? "",
+        originalValuePaise: l.original_value_paise,
+        salePricePaise: l.sale_price_paise,
+        quantityAvailable: l.quantity_available,
+        pickupWindowStart: (l.pickup_window_start as Date).toISOString(),
+        pickupWindowEnd: (l.pickup_window_end as Date).toISOString(),
+        discountPercent: Math.round((1 - l.sale_price_paise / l.original_value_paise) * 100),
+      })),
+    },
+    200,
+    { requestId }
+  );
 });
 
 export const POST = route(async (req, _ctx, requestId) => {

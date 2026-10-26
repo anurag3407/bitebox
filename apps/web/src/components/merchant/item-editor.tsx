@@ -13,7 +13,21 @@ import { errorMessage, useApi } from "@/lib/api";
 type Draft = MenuItemInputRaw & { id?: string };
 
 function blank(categoryId: string): Draft {
-  return { categoryId, name: "", description: "", pricePaise: 0, dietaryTag: "VEG", imageUrl: "", isBestseller: false, isAvailable: true, displayOrder: 0, variants: [], modifierGroups: [] };
+  return {
+    categoryId,
+    name: "",
+    description: "",
+    pricePaise: 0,
+    dietaryTag: "VEG",
+    imageUrl: "",
+    isBestseller: false,
+    isAvailable: true,
+    displayOrder: 0,
+    allergens: [],
+    spiceLevel: 0,
+    variants: [],
+    modifierGroups: [],
+  };
 }
 
 function SubHeading({ title, hint, action }: { title: string; hint?: string; action: React.ReactNode }) {
@@ -51,6 +65,8 @@ export function ItemEditor({
   const [uploading, setUploading] = useState(false);
   // Functional update: async callers (image upload) must not overwrite edits made meanwhile
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setD((prev) => ({ ...prev, [k]: v }));
+  const setNutrition = (patch: Partial<NonNullable<Draft["nutrition"]>>) =>
+    setD((prev) => ({ ...prev, nutrition: { ...(prev.nutrition ?? {}), ...patch } }));
   const variants = d.variants ?? [];
   const groups = d.modifierGroups ?? [];
   const canSave = d.name.trim().length > 0 && d.pricePaise > 0;
@@ -111,6 +127,63 @@ export function ItemEditor({
           <Field label="Description" className="sm:col-span-2">
             <textarea rows={2} maxLength={400} value={d.description ?? ""} onChange={(e) => set("description", e.target.value)} className="input" />
           </Field>
+          <Field label="Serves" hint="People this dish feeds">
+            <input
+              type="number"
+              min={1}
+              max={20}
+              value={d.serves ?? ""}
+              onChange={(e) => set("serves", e.target.value ? Number(e.target.value) : undefined)}
+              className="input"
+            />
+          </Field>
+          <Field label="Spice level">
+            <select value={d.spiceLevel ?? 0} onChange={(e) => set("spiceLevel", Number(e.target.value))} className="input">
+              <option value={0}>Not spicy</option>
+              <option value={1}>Mild</option>
+              <option value={2}>Spicy</option>
+              <option value={3}>Extra spicy</option>
+            </select>
+          </Field>
+          <Field label="Allergens" hint="Comma separated, e.g. Milk, Nuts, Gluten" className="sm:col-span-2">
+            <input
+              value={(d.allergens ?? []).join(", ")}
+              onChange={(e) =>
+                set(
+                  "allergens",
+                  e.target.value
+                    .split(",")
+                    .map((a) => a.trim())
+                    .filter(Boolean)
+                )
+              }
+              className="input"
+            />
+          </Field>
+          <div className="sm:col-span-2">
+            <p className="label">Nutrition per serving</p>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {(
+                [
+                  ["calories", "Calories"],
+                  ["proteinG", "Protein (g)"],
+                  ["carbsG", "Carbs (g)"],
+                  ["fatG", "Fat (g)"],
+                ] as const
+              ).map(([key, label]) => (
+                <label key={key}>
+                  <span className="mb-1 block text-[11px] text-ink-muted">{label}</span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={d.nutrition?.[key] ?? ""}
+                    onChange={(e) => setNutrition({ [key]: e.target.value ? Number(e.target.value) : undefined })}
+                    className="input input-sm"
+                  />
+                </label>
+              ))}
+            </div>
+          </div>
           <div className="flex items-end gap-4 sm:col-span-2">
             <SafeImage src={d.imageUrl || undefined} alt="" className="h-12 w-12 shrink-0 rounded-xl object-cover" />
             <Field label="Photo URL" className="min-w-0 flex-1">

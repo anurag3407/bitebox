@@ -4,6 +4,7 @@ import { getDbPool, withTransaction } from "../client.js";
 import { JobKind, JobRepository } from "./job.repository.js";
 import { LedgerRepository } from "./ledger.repository.js";
 import { OutboxRepository } from "./outbox.repository.js";
+import { WalletRepository } from "./wallet.repository.js";
 
 function monthRange(month: string): { start: Date; end: Date } {
   const match = /^(\d{4})-(\d{2})$/.exec(month);
@@ -68,13 +69,91 @@ export class CorporateRepository {
 
   static async findAccountForUser(userId: string) {
     const res = await getDbPool().query(
-      `SELECT a.*, e.cost_center_code, e.email_domain
-         FROM corporate_employees e JOIN corporate_accounts a ON a.id = e.corporate_account_id
+      `SELECT a.*, e.cost_center_code, e.email_domain, dp.name AS drop_point_name
+         FROM corporate_employees e
+         JOIN corporate_accounts a ON a.id = e.corporate_account_id
+         LEFT JOIN drop_points dp ON dp.id = a.drop_point_id
         WHERE e.user_id = $1 AND e.is_active AND a.is_active
         ORDER BY e.created_at ASC LIMIT 1`,
       [userId]
     );
     return res.rows[0] ?? null;
+  }
+
+  static async membershipForUser(userId: string) {
+    const account = await CorporateRepository.findAccountForUser(userId);
+    if (!account) return null;
+    const used = await getDbPool().query(
+      `SELECT COALESCE(SUM(corporate_covered_paise), 0)::int AS used, COUNT(*)::int AS orders
+         FROM orders
+        WHERE customer_id = $1 AND corporate_account_id = $2
+          AND created_at >= date_trunc('day', NOW())
+          AND fulfillment_state NOT IN ('CANCELLED', 'DELIVERY_FAILED', 'PENDING_PAYMENT')`,
+      [userId, account.id]
+    );
+    const usedTodayPaise = Number(used.rows[0]?.used ?? 0);
+    return {
+      account,
+      usedTodayPaise,
+      ordersToday: Number(used.rows[0]?.orders ?? 0),
+      remainingAllowancePaise: Math.max(0, account.daily_allowance_per_employee_paise - usedTodayPaise),
+    };
+  }
+
+  static async findUserByEmail(email: string) {
+    const res = await getDbPool().query(
+      `SELECT id, name, email FROM app_users WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+      [email.trim()]
+    );
+    return res.rows[0] ?? null;
+  }
+
+  static async listAccounts() {
+    const res = await getDbPool().query(
+      `SELECT a.*, dp.name AS drop_point_name,
+              (SELECT COUNT(*)::int FROM corporate_employees e WHERE e.corporate_account_id = a.id AND e.is_active) AS employees,
+              (SELECT COUNT(*)::int FROM corporate_invoices i WHERE i.corporate_account_id = a.id) AS invoices
+         FROM corporate_accounts a
+         LEFT JOIN drop_points dp ON dp.id = a.drop_point_id
+        ORDER BY a.created_at DESC`
+    );
+    return res.rows.map((r) => ({
+      id: r.id as string,
+      companyName: r.company_name as string,
+      gstin: r.gstin as string,
+      billingAddress: r.billing_address as string,
+      dropPointId: r.drop_point_id as string,
+      dropPointName: r.drop_point_name as string | null,
+      dailyAllowancePerEmployeePaise: r.daily_allowance_per_employee_paise as number,
+      subsidyPercentageBp: r.subsidy_percentage_bp as number,
+      corporateManagementFeeBp: r.corporate_management_fee_bp as number,
+      creditLimitPaise: r.credit_limit_paise as number,
+      unbilledBalancePaise: r.unbilled_balance_paise as number,
+      employees: Number(r.employees),
+      invoices: Number(r.invoices),
+      isActive: r.is_active as boolean,
+      createdAt: (r.created_at as Date).toISOString(),
+    }));
+  }
+
+  static async listEmployees(corporateAccountId: string) {
+    const res = await getDbPool().query(
+      `SELECT e.*, u.name, u.email
+         FROM corporate_employees e JOIN app_users u ON u.id = e.user_id
+        WHERE e.corporate_account_id = $1
+        ORDER BY e.created_at DESC`,
+      [corporateAccountId]
+    );
+    return res.rows.map((r) => ({
+      id: r.id as string,
+      userId: r.user_id as string,
+      name: r.name as string,
+      email: r.email as string,
+      costCenterCode: r.cost_center_code as string,
+      emailDomain: r.email_domain as string,
+      isActive: r.is_active as boolean,
+      createdAt: (r.created_at as Date).toISOString(),
+    }));
   }
 
   static async splitForUser(input: {
@@ -162,10 +241,10 @@ export class CorporateRepository {
             promised_delivery_at, merchant_response_deadline_at, quote_id, acquisition_channel,
             commission_bp_applied, commission_paise, merchant_order_fee_paise, merchant_net_payout_paise,
             order_type, corporate_account_id, corporate_covered_paise, corporate_overage_paise,
-            corporate_cost_center_code, drop_point_id, slot_window, slot_cutoff_at)
+            corporate_cost_center_code, drop_point_id, slot_window, slot_cutoff_at, payment_method)
          VALUES ($1, $2, $3, $4, $5, $6, 'AWAITING_MERCHANT', 'CAPTURED', $7, $8, $9, $10, $11, $12,
                  'CORPORATE_CLUB', 0, 0, 0, $13, 'CORPORATE', $14, $15, $16, $17, $18, $19,
-                 $10::timestamptz - interval '30 minutes')
+                 $10::timestamptz - interval '30 minutes', 'WALLET')
          RETURNING *`,
         [
           orderNumber,
@@ -193,10 +272,16 @@ export class CorporateRepository {
 
       let paymentId: string | null = null;
       if (split.employeePayablePaise > 0) {
+        await WalletRepository.debitForOrderWithClient(client, {
+          userId: input.userId,
+          orderId: order.id,
+          amountPaise: split.employeePayablePaise,
+          description: "Corporate lunch overage",
+        });
         const paymentRes = await client.query(
           `INSERT INTO payments (id, order_id, provider_payment_id, status, amount_paise, currency)
            VALUES (gen_random_uuid(), $1, $2, 'CAPTURED', $3, 'INR') RETURNING id`,
-          [order.id, `CORPORATE:${order.id}`, split.employeePayablePaise]
+          [order.id, `wallet:${order.id}`, split.employeePayablePaise]
         );
         paymentId = paymentRes.rows[0].id;
       }

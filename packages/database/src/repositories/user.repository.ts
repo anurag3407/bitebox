@@ -55,6 +55,7 @@ export class UserRepository {
       role: r.role,
       isActive: r.is_active,
       deletedAt: r.deleted_at,
+      language: r.language ?? "en",
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     };

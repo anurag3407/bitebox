@@ -64,7 +64,7 @@ export class InvoiceRepository {
            JOIN restaurants r ON r.id = o.restaurant_id
            JOIN merchants m ON m.id = r.merchant_id
            JOIN app_users u ON u.id = o.customer_id
-           JOIN customer_addresses a ON a.id = o.delivery_address_id
+           LEFT JOIN customer_addresses a ON a.id = o.delivery_address_id
           WHERE o.id = $1 FOR UPDATE OF o`,
         [orderId]
       );
@@ -76,8 +76,17 @@ export class InvoiceRepository {
       const fy = financialYear(issuedAt);
       const seq = await nextSequence(client, fy);
       const invoiceNumber = formatInvoiceNumber(platform.invoicePrefix, fy, seq);
-      const snapshot = o.delivery_address_snapshot ?? { building: o.building, street: o.street };
+      // Pickup orders have no address row; their snapshot carries the restaurant address
+      const snapshot =
+        o.delivery_address_snapshot ??
+        (o.building ? { building: o.building, street: o.street } : { building: o.restaurant_name, street: o.address_text });
       const sections = buildInvoiceSections(o.breakdown_json as QuoteBreakdown, o.items_json as QuoteLineBreakdown[]);
+      const paymentMode =
+        o.payment_method === "COD"
+          ? "Cash on delivery"
+          : o.payment_method === "WALLET"
+            ? "BiteBox Credits"
+            : "Online (Razorpay)";
 
       const data: InvoiceData = {
         invoiceNumber,
@@ -88,7 +97,7 @@ export class InvoiceRepository {
         restaurant: { name: o.restaurant_name, address: o.address_text, gstin: o.restaurant_gstin, fssai: o.fssai },
         customer: { name: o.customer_name, address: `${snapshot.building}, ${snapshot.street}` },
         ...sections,
-        paymentMode: "Online (Razorpay)",
+        paymentMode,
       };
       await client.query(
         `INSERT INTO invoices (order_id, invoice_number, financial_year, seq, data_json, issued_at) VALUES ($1, $2, $3, $4, $5, $6)`,

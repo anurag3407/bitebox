@@ -90,7 +90,19 @@ export function OutletSettings({ restaurantId, isOwner }: { restaurantId: string
   const toast = useToast();
   const menu = useQuery({ queryKey: ["editable-menu", restaurantId], queryFn: () => api.getEditableMenu(restaurantId) });
   const staff = useQuery({ queryKey: ["staff", restaurantId], queryFn: () => api.getStaff(restaurantId) });
-  const [s, setS] = useState<{ description: string; phone: string; packaging: string; prep: string; avgPrice: string; heroImageUrl: string; isOpen: boolean; hours: OpeningHours | null } | null>(null);
+  const [s, setS] = useState<{
+    description: string;
+    phone: string;
+    packaging: string;
+    prep: string;
+    avgPrice: string;
+    heroImageUrl: string;
+    amenities: string;
+    gallery: string;
+    hygieneRating: string;
+    isOpen: boolean;
+    hours: OpeningHours | null;
+  } | null>(null);
   const [staffEmail, setStaffEmail] = useState("");
   const [staffRole, setStaffRole] = useState("KITCHEN");
   const [busy, setBusy] = useState(false);
@@ -106,6 +118,9 @@ export function OutletSettings({ restaurantId, isOwner }: { restaurantId: string
         prep: String(r.avgPrepMinutes),
         avgPrice: String(r.avgPriceForOnePaise / 100),
         heroImageUrl: r.heroImageUrl ?? "",
+        amenities: (r.amenities ?? []).join(", "),
+        gallery: (r.gallery ?? []).join("\n"),
+        hygieneRating: r.hygieneRating ? String(r.hygieneRating) : "4",
         isOpen: r.isOpen,
         hours: (r.openingHours as OpeningHours | null) ?? null,
       });
@@ -127,6 +142,15 @@ export function OutletSettings({ restaurantId, isOwner }: { restaurantId: string
               avgPrepMinutes: Number(s.prep),
               avgPriceForOnePaise: Math.round(Number(s.avgPrice) * 100),
               heroImageUrl: s.heroImageUrl || undefined,
+              amenities: s.amenities
+                .split(",")
+                .map((a) => a.trim())
+                .filter(Boolean),
+              gallery: s.gallery
+                .split("\n")
+                .map((g) => g.trim())
+                .filter(Boolean),
+              hygieneRating: Number(s.hygieneRating),
               isOpen: s.isOpen,
               openingHours: s.hours,
             });
@@ -158,6 +182,17 @@ export function OutletSettings({ restaurantId, isOwner }: { restaurantId: string
             </Field>
             <Field label="About the outlet" className="sm:col-span-2">
               <textarea rows={3} maxLength={300} value={s.description} onChange={(e) => setS({ ...s, description: e.target.value })} className="input" />
+            </Field>
+            <Field label="Amenities" hint="Comma separated, e.g. Outdoor seating, Parking" className="sm:col-span-2">
+              <input value={s.amenities} onChange={(e) => setS({ ...s, amenities: e.target.value })} className="input" />
+            </Field>
+            <Field label="Gallery image URLs" hint="One URL per line, up to 10" className="sm:col-span-2">
+              <textarea rows={3} value={s.gallery} onChange={(e) => setS({ ...s, gallery: e.target.value })} className="input" />
+            </Field>
+            <Field label="Hygiene rating" hint="Self-declared FSSAI-aligned rating, shown on your storefront">
+              <select className="input" value={s.hygieneRating} onChange={(e) => setS({ ...s, hygieneRating: e.target.value })}>
+                {[1, 2, 3, 4, 5].map((rating) => <option key={rating} value={rating}>{rating}/5</option>)}
+              </select>
             </Field>
           </div>
         </Block>

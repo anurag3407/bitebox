@@ -14,7 +14,11 @@ export const POST = route<{ orderId: string }>(async (req, { params }, requestId
     actorId: auth.user.id,
     reason: "Kitchen marked food ready for pickup",
   });
-  // If dispatch was scheduled for later (long prep), start looking for a rider now
-  await JobRepository.enqueue(JobKind.DISPATCH_ORDER, { orderId, attempt: 0 }, { dedupeKey: `dispatch:${orderId}:ready` });
+  // If dispatch was scheduled for later (long prep), start looking for a rider now.
+  // Pickup orders never need one.
+  const order = await OrderRepository.findById(orderId);
+  if (order?.orderMode !== "PICKUP") {
+    await JobRepository.enqueue(JobKind.DISPATCH_ORDER, { orderId, attempt: 0 }, { dedupeKey: `dispatch:${orderId}:ready` });
+  }
   return apiSuccess({ success: true, fulfillmentState: FulfillmentState.READY_FOR_PICKUP }, 200, { requestId });
 });

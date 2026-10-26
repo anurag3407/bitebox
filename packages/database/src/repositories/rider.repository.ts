@@ -7,6 +7,8 @@ import { deliveryAssignments, riders } from "../schema/schema.js";
 import { JobKind, JobRepository } from "./job.repository.js";
 import { OrderRepository } from "./order.repository.js";
 import { OutboxRepository } from "./outbox.repository.js";
+import { ReferralRepository } from "./referral.repository.js";
+import { LoyaltyRepository } from "./loyalty.repository.js";
 
 type Queryable = Pick<PoolClient, "query">;
 
@@ -53,10 +55,13 @@ export class RiderRepository {
    */
   static async setOnlineStatus(riderId: string, isOnline: boolean): Promise<void> {
     await withTransaction(async (client) => {
-      const res = await client.query(`SELECT is_approved FROM riders WHERE id = $1 FOR UPDATE`, [riderId]);
+      const res = await client.query(`SELECT is_approved, verification_status FROM riders WHERE id = $1 FOR UPDATE`, [riderId]);
       if (!res.rows[0]) throw new DomainError("NOT_FOUND", "Rider not found");
       if (isOnline && !res.rows[0].is_approved) {
         throw new DomainError("FORBIDDEN", "Your account is pending approval.");
+      }
+      if (isOnline && res.rows[0].verification_status !== "VERIFIED") {
+        throw new DomainError("FORBIDDEN", "Complete your KYC verification before going online.");
       }
       if (!isOnline) {
         const active = await client.query(
@@ -439,6 +444,15 @@ export class RiderRepository {
         }
 
         case DeliveryTripStatus.COMPLETED: {
+          if (order.contactless) {
+            const proof = await client.query(`SELECT 1 FROM delivery_proofs WHERE order_id = $1`, [order.id]);
+            if (proof.rows.length === 0) {
+              throw new DomainError(
+                "VALIDATION_ERROR",
+                "This is a contactless delivery. Add a doorstep photo before completing it."
+              );
+            }
+          }
           if (trip.otp_failed_attempts >= MAX_DELIVERY_OTP_ATTEMPTS) {
             throw new DomainError(
               "FORBIDDEN",
@@ -474,6 +488,15 @@ export class RiderRepository {
             extra: { riderId: input.riderId },
           });
           await client.query(`UPDATE delivery_assignments SET completed_at = NOW() WHERE id = $1`, [trip.id]);
+          // COD is collected at the door before the delivery is closed
+          await OrderRepository.recordCodCollectionWithClient(client, order);
+          await client.query(`UPDATE riders SET delivery_count = delivery_count + 1 WHERE id = $1`, [input.riderId]);
+          await ReferralRepository.qualifyWithClient(client, { refereeUserId: order.customer_id, orderId: order.id });
+          await LoyaltyRepository.rewardDeliveryWithClient(client, {
+            userId: order.customer_id,
+            orderId: order.id,
+            subtotalPaise: order.breakdown_json.subtotalPaise,
+          });
           await JobRepository.enqueueWithClient(client, JobKind.ISSUE_INVOICE, { orderId: order.id }, { dedupeKey: `invoice:${order.id}` });
           break;
         }
@@ -521,6 +544,9 @@ export class RiderRepository {
     try {
       return await withTransaction(async (client) => {
         const order = await OrderRepository.lockForUpdate(client, input.orderId);
+        if (order.order_mode === "PICKUP") {
+          throw new DomainError("STATE_CONFLICT", "Pickup orders are collected by the customer and need no rider.");
+        }
         if (!DISPATCHABLE_STATES.includes(order.fulfillment_state)) {
           throw new DomainError("STATE_CONFLICT", "Order is not awaiting a rider");
         }

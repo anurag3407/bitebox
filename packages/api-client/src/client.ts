@@ -1,4 +1,4 @@
-import type { MenuItemInputRaw, RestaurantSettings, SupportCategory } from "@startup/contracts";
+import type { MenuItemInputRaw, MerchantCouponInput, RestaurantSettings, SupportCategory } from "@startup/contracts";
 import {
   AddressDto,
   CheckoutResponse,
@@ -20,10 +20,244 @@ import {
   RestaurantListResponse,
   RestaurantReviewDto,
   RestaurantSummaryDto,
+  GroupCartDto,
+  DiningEventDto,
+  DiningEventBookingDto,
+  CollectionSummaryDto,
+  CollectionDetailDto,
   SearchResultDto,
   ServiceabilityCheckResponse,
   VerifyPaymentRequest,
 } from "@startup/contracts";
+
+export interface WalletSummaryDto {
+  account: { userId: string; balancePaise: number; lifetimeCreditedPaise: number; lifetimeSpentPaise: number; updatedAt: string };
+  transactions: Array<{
+    id: string;
+    kind: string;
+    direction: "CREDIT" | "DEBIT";
+    amountPaise: number;
+    balanceAfterPaise: number;
+    referenceType?: string;
+    referenceId?: string;
+    description: string;
+    createdAt: string;
+  }>;
+}
+
+export interface ReferralSummaryDto {
+  code: string;
+  shareUrl: string;
+  referrerRewardPaise: number;
+  refereeRewardPaise: number;
+  stats: { invited: number; rewarded: number; pending: number; earnedPaise: number };
+  referrals: Array<{
+    id: string;
+    code: string;
+    referrerName: string;
+    refereeName: string;
+    status: string;
+    referrerRewardPaise: number;
+    refereeRewardPaise: number;
+    rewardedAt?: string;
+    createdAt: string;
+  }>;
+}
+
+export interface NotificationDto {
+  id: string;
+  kind: string;
+  title: string;
+  body: string;
+  url?: string;
+  readAt?: string;
+  createdAt: string;
+}
+
+export interface SurplusBagDto {
+  id: string;
+  title: string;
+  restaurantId: string;
+  restaurantName: string;
+  restaurantSlug: string;
+  restaurantImageUrl?: string;
+  restaurantCuisines: string[];
+  restaurantRating: number;
+  restaurantAddress: string;
+  originalValuePaise: number;
+  salePricePaise: number;
+  quantityAvailable: number;
+  pickupWindowStart: string;
+  pickupWindowEnd: string;
+  discountPercent: number;
+}
+
+export interface MembershipOverviewDto {
+  active: {
+    id: string;
+    planCode: string;
+    planName: string;
+    description: string;
+    benefits: { freeDeliveryAbovePaise?: number };
+    startsAt: string;
+    endsAt: string;
+    source: string;
+  } | null;
+  plans: Array<{
+    id: string;
+    code: string;
+    name: string;
+    description: string;
+    pricePaise: number;
+    durationDays: number;
+    benefits: { freeDeliveryAbovePaise?: number };
+  }>;
+  deliveredOrders: number;
+  ordersToGold: number;
+  cashbackEarnedPaise: number;
+}
+
+export interface RiderVerificationDto {
+  riderId: string;
+  riderName: string;
+  phone: string;
+  vehicleType: string;
+  vehicleNumber?: string;
+  isApproved: boolean;
+  isOnline: boolean;
+  status: "PENDING" | "IN_REVIEW" | "VERIFIED" | "REJECTED" | "SUSPENDED";
+  aadhaarLast4?: string;
+  panVerified: boolean;
+  dlVerified: boolean;
+  backgroundCheckStatus: "PENDING" | "CLEAR" | "CONSIDER";
+  trainingCompletedAt?: string;
+  submittedAt?: string;
+  verifiedAt?: string;
+  rejectionReason?: string;
+  requiredDocs: string[];
+  missingDocs: string[];
+  documents: Array<{
+    id: string;
+    docType: string;
+    fileUrl: string;
+    status: "PENDING" | "VERIFIED" | "REJECTED";
+    reviewNote?: string;
+    reviewedAt?: string;
+    createdAt: string;
+  }>;
+}
+
+export interface AdminRiderVerificationRow {
+  riderId: string;
+  name: string;
+  phone: string;
+  vehicleType: string;
+  isApproved: boolean;
+  status: RiderVerificationDto["status"];
+  submittedAt?: string;
+  rejectionReason?: string;
+  documentCount: number;
+}
+
+export interface OrderMessageDto {
+  id: string;
+  channel: "CUSTOMER_RIDER" | "CUSTOMER_MERCHANT";
+  senderType: "CUSTOMER" | "RIDER" | "MERCHANT" | "SYSTEM";
+  senderName?: string;
+  body: string;
+  readAt?: string;
+  createdAt: string;
+}
+
+export interface OrderIssueDto {
+  id: string;
+  orderId: string;
+  orderNumber: string;
+  customerId: string;
+  customerName: string;
+  category: string;
+  description?: string;
+  itemsJson: string[];
+  photosJson: string[];
+  status: "OPEN" | "UNDER_REVIEW" | "RESOLVED" | "REJECTED";
+  resolution?: string;
+  refundAmountPaise: number;
+  walletCreditPaise: number;
+  couponCode?: string;
+  supportTicketId?: string;
+  adminNote?: string;
+  resolvedAt?: string;
+  createdAt: string;
+}
+
+export interface DiningRestaurantDto {
+  id: string;
+  slug: string;
+  name: string;
+  cuisines: string[];
+  rating: number;
+  ratingCount: number;
+  avgPriceForOnePaise: number;
+  heroImageUrl?: string;
+  addressText: string;
+  latitude: number;
+  longitude: number;
+  pureVeg: boolean;
+  isOpen: boolean;
+  acceptsReservations: boolean;
+  reservationSlotMinutes: number;
+  reservationCapacityPerSlot: number;
+  maxPartySize: number;
+  diningDescription?: string;
+  distanceMeters?: number;
+}
+
+export interface DiningAvailabilityDto {
+  restaurant: DiningRestaurantDto;
+  date: string;
+  slots: Array<{ slot: string; capacityLeft: number; isAvailable: boolean }>;
+}
+
+export interface DiningReservationDto {
+  id: string;
+  restaurantId: string;
+  restaurantName: string;
+  restaurantSlug: string;
+  restaurantAddress: string;
+  restaurantImageUrl?: string;
+  customerId: string;
+  customerName: string;
+  date: string;
+  slot: string;
+  partySize: number;
+  occasion?: string;
+  specialRequest?: string;
+  status: "CONFIRMED" | "SEATED" | "COMPLETED" | "CANCELLED" | "NO_SHOW";
+  confirmationCode: string;
+  createdAt: string;
+  cancelledAt?: string;
+}
+
+export interface NotificationPreferencesDto {
+  orderUpdates: boolean;
+  offers: boolean;
+  referrals: boolean;
+  newsletter: boolean;
+  pushEnabled: boolean;
+  smsEnabled: boolean;
+  emailEnabled: boolean;
+  whatsappEnabled: boolean;
+  updatedAt: string;
+}
+
+export interface SafetyContactDto {
+  id: string;
+  name: string;
+  phone: string;
+  relationship?: string;
+  isPrimary: boolean;
+  createdAt: string;
+}
 
 export interface ApiClientConfig {
   baseUrl: string;
@@ -98,6 +332,7 @@ export interface MeResponse {
   email: string | null;
   phone: string | null;
   role: "CUSTOMER" | "MERCHANT_STAFF" | "RIDER" | "ADMIN";
+  language: string;
   rider: { id: string; isOnline: boolean; isApproved: boolean; vehicleType: string } | null;
   restaurants: Array<{ id: string; name: string; slug: string; staffRole: string; isAcceptingOrders: boolean; isOpen: boolean }>;
 }
@@ -191,6 +426,242 @@ export interface Earnings {
   account: { accountHolderName: string; ifsc: string; accountLast4: string; updatedAt: string } | null;
 }
 
+export interface RiderIncentive {
+  id: string;
+  code: string;
+  title: string;
+  description: string;
+  targetDeliveries: number;
+  progressDeliveries: number;
+  rewardPaise: number;
+  startsAt: string;
+  endsAt: string;
+  canClaim: boolean;
+  claimedAt?: string;
+}
+
+export interface RiderShift {
+  id: string;
+  label: string;
+  startsAt: string;
+  endsAt: string;
+  capacity: number;
+  bookedCount: number;
+  spotsLeft: number;
+  isBooked: boolean;
+  canBook: boolean;
+  canCancel: boolean;
+}
+
+export interface RiderRewardsOverview {
+  incentives: RiderIncentive[];
+  shifts: RiderShift[];
+  deliveredToday: number;
+  claimedBonusPaise: number;
+}
+
+export interface RiderInsurancePolicy {
+  id: string;
+  riderId: string;
+  planCode: string;
+  planName: string;
+  coveragePaise: number;
+  hospitalCashPaise: number;
+  status: string;
+  validFrom: string;
+  validUntil: string;
+}
+
+export interface RiderInsuranceClaim {
+  id: string;
+  policyId: string;
+  riderId: string;
+  incidentType: string;
+  incidentDate: string;
+  description: string;
+  claimedPaise: number;
+  approvedPaise?: number;
+  status: string;
+  reviewNote?: string;
+  reviewedAt?: string;
+  createdAt: string;
+  riderName?: string;
+  riderPhone?: string;
+}
+
+export interface RiderEquipment {
+  id: string;
+  riderId: string;
+  itemType: string;
+  size?: string;
+  status: string;
+  notes?: string;
+  issuedAt: string;
+  updatedAt: string;
+  renewalDueAt?: string;
+  replacementFeePaise?: number;
+  replacementFeeDeducted?: boolean;
+  renewalStatus?: "VALID" | "DUE_SOON" | "EXPIRED";
+}
+
+export interface MealPlan {
+  id: string;
+  name: string;
+  skuType: "STANDARD_LUNCH" | "STANDARD_DINNER";
+  totalMeals: number;
+  pricePaise: number;
+  validityDays: number;
+  lateSkipFeePaise: number;
+  autoScheduleDays: number[];
+  slotWindow: string;
+  kitchenId: string;
+  kitchenName: string;
+  kitchenSlug: string;
+  clusterId?: string | null;
+}
+
+export interface MealPass {
+  id: string;
+  planId: string;
+  planName: string;
+  skuType: string;
+  slotWindow: string;
+  kitchenId: string;
+  kitchenName: string;
+  totalMeals: number;
+  mealsRemaining: number;
+  status: string;
+  autoScheduleDays: number[];
+  purchasedAt: string;
+  expiresAt: string;
+}
+
+export interface Campus {
+  id: string;
+  name: string;
+  isActive: boolean;
+  dropPoints: Array<{ id: string; name: string; latitude: number; longitude: number }>;
+  plans: Array<{
+    id: string;
+    name: string;
+    skuType: string;
+    totalMeals: number;
+    pricePaise: number;
+    validityDays: number;
+    slotWindow: string;
+    kitchenName: string;
+  }>;
+}
+
+export interface ScheduledMealDelivery {
+  id: string;
+  passId: string;
+  planName: string;
+  skuType: string;
+  kitchenName: string;
+  deliveryDate: string;
+  slotWindow: string;
+  status: string;
+  source: string;
+  skipAt?: string;
+  surplusListingId?: string;
+}
+
+export interface CorporateMembership {
+  member: boolean;
+  accountId?: string;
+  companyName?: string;
+  costCenterCode?: string;
+  emailDomain?: string;
+  dropPointName?: string;
+  dailyAllowancePaise?: number;
+  subsidyPercentageBp?: number;
+  managementFeeBp?: number;
+  creditLimitPaise?: number;
+  unbilledBalancePaise?: number;
+  usedTodayPaise?: number;
+  ordersToday?: number;
+  remainingAllowancePaise?: number;
+}
+
+export interface CorporateSplit {
+  companyName: string;
+  costCenterCode: string;
+  orderTotalPaise: number;
+  allowanceRemainingPaise: number;
+  coveredPaise: number;
+  overagePaise: number;
+  managementFeePaise: number;
+  corporateBilledPaise: number;
+  employeePayablePaise: number;
+}
+
+export interface CorporateAdminAccount {
+  id: string;
+  companyName: string;
+  gstin: string;
+  billingAddress: string;
+  dropPointId: string;
+  dropPointName: string | null;
+  dailyAllowancePerEmployeePaise: number;
+  subsidyPercentageBp: number;
+  corporateManagementFeeBp: number;
+  creditLimitPaise: number;
+  unbilledBalancePaise: number;
+  employees: number;
+  invoices: number;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface CorporateDropPoint {
+  id: string;
+  clusterId: string;
+  clusterName: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  captainFeePerBagPaise: number;
+}
+
+export interface GiftCard {
+  id: string;
+  code: string;
+  purchaserId: string;
+  recipientName: string;
+  recipientContact?: string;
+  message?: string;
+  amountPaise: number;
+  status: string;
+  redeemedBy?: string;
+  redeemedAt?: string;
+  expiresAt: string;
+  createdAt: string;
+}
+
+export interface Donation {
+  id: string;
+  amountPaise: number;
+  fund: string;
+  receiptCode: string;
+  status: string;
+  createdAt: string;
+}
+
+export interface PersonalizedFeed {
+  affinity: Array<{ cuisine: string; orders: number; lastOrderedAt: string }>;
+  reorder: RestaurantSummaryDto[];
+  recommended: RestaurantSummaryDto[];
+  headline: string;
+}
+
+export interface AddonUpsellSku {
+  id: string;
+  name: string;
+  pricePaise: number;
+  stockCount: number;
+}
+
 export interface MerchantAnalyticsChannel {
   channel: string;
   orders: number;
@@ -202,6 +673,60 @@ export interface MerchantAnalyticsChannel {
   defectRefunds: number;
   refundedOrders: number;
   gmvSharePercent: number;
+}
+
+export interface SponsorshipState {
+  active: boolean;
+  endsAt?: string;
+  daysRemaining?: number;
+  dailyRatePaise: number;
+  totalSpentPaise: number;
+  maxDailyBudgetPaise?: number;
+  bidPerClickPaise?: number;
+}
+
+export interface SponsorshipAnalytics {
+  totalImpressions: number;
+  totalClicks: number;
+  ctrPercent: number;
+  conversions: number;
+  conversionRatePercent: number;
+  totalSalesPaise: number;
+  spendPaise: number;
+  roas: number;
+  maxDailyBudgetPaise: number;
+  bidPerClickPaise: number;
+  dailyBreakdown: Array<{
+    date: string;
+    impressions: number;
+    clicks: number;
+    conversions: number;
+  }>;
+}
+
+export interface BillSplitShare {
+  id: string;
+  shareIndex: number;
+  amountPaise: number;
+  status: "PENDING" | "PAID";
+  payerId?: string;
+  payerName?: string;
+  paidAt?: string;
+}
+
+export interface BillSplit {
+  id: string;
+  orderId: string;
+  orderNumber: string;
+  restaurantName: string;
+  hostId: string;
+  hostName: string;
+  token: string;
+  parts: number;
+  totalPaise: number;
+  status: string;
+  shares: BillSplitShare[];
+  createdAt: string;
 }
 
 export interface MerchantAnalytics {
@@ -235,6 +760,44 @@ export interface EditableMenuItem extends MenuItemInputRaw {
   id: string;
 }
 
+export interface MerchantCouponDto {
+  id: string;
+  code: string;
+  type: "PERCENTAGE" | "FLAT" | "FREE_DELIVERY";
+  discountValue: number;
+  maxDiscountPaise: number | null;
+  minOrderPaise: number;
+  isActive: boolean;
+  description: string | null;
+  validFrom: string | null;
+  validUntil: string | null;
+  usageLimitTotal: number | null;
+  usageLimitPerUser: number | null;
+  firstOrderOnly: boolean;
+  restaurantId: string;
+  fundedBy?: "PLATFORM" | "MERCHANT";
+  redeemedCount: number;
+  reservedCount: number;
+  fundedSpendPaise: number;
+  attributedOrders: number;
+  attributedRevenuePaise: number;
+  createdAt: string;
+}
+
+export interface MerchantSurplusListing {
+  id: string;
+  title: string;
+  originalValuePaise: number;
+  salePricePaise: number;
+  platformFlatFeePaise: number;
+  quantityAvailable: number;
+  pickupWindowStart: string;
+  pickupWindowEnd: string;
+  status: string;
+  soldCount: number;
+  createdAt: string;
+}
+
 export interface EditableMenu {
   restaurant: {
     id: string;
@@ -248,6 +811,9 @@ export interface EditableMenu {
     heroImageUrl: string | null;
     isOpen: boolean;
     openingHours: RestaurantSettings["openingHours"];
+    amenities: string[];
+    gallery: string[];
+    hygieneRating: number | null;
   };
   categories: Array<{ id: string; name: string; isActive: boolean; displayOrder: number; items: EditableMenuItem[] }>;
 }
@@ -308,6 +874,79 @@ function qs(params: Record<string, string | number | boolean | undefined | null>
   }
   const s = search.toString();
   return s ? `?${s}` : "";
+}
+
+export interface AdminJobRow {
+  id: string;
+  kind: string;
+  status: string;
+  attemptCount: number;
+  maxAttempts: number;
+  runAt: string;
+  lastError?: string;
+  updatedAt: string;
+}
+
+export interface AdminAuditRow {
+  action: string;
+  targetType: string;
+  targetId: string;
+  details: Record<string, unknown> | null;
+  adminName: string;
+  createdAt: string;
+}
+
+export interface AdminClusterRow {
+  id: string;
+  cityId: string;
+  name: string;
+  minProfitableDrops: number;
+  isActive: boolean;
+  dropPoints: number;
+  batches: number;
+  createdAt: string;
+}
+
+export interface AdminZoneDropPoint {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  captainFeePerBagPaise: number;
+}
+
+export interface AdminZone extends Omit<AdminClusterRow, "dropPoints"> {
+  dropPoints: AdminZoneDropPoint[];
+}
+
+export interface BatchCandidate {
+  slotWindow: string;
+  orders: number;
+  drops: number;
+  firstOrderAt: string;
+  lastCutoffAt: string | null;
+}
+
+export interface DispatchBatchRow {
+  id: string;
+  clusterId: string;
+  slotWindow: string;
+  slotStart: string;
+  slotEnd: string;
+  status: string;
+  riderId: string | null;
+  riderName: string | null;
+  totalDrops: number;
+  orderCount: number;
+  createdAt: string;
+}
+
+export interface AdminOperations {
+  stats: Array<{ kind: string; status: string; count: number }>;
+  jobs: AdminJobRow[];
+  failedJobs: AdminJobRow[];
+  audits: AdminAuditRow[];
+  clusters: AdminClusterRow[];
 }
 
 export class ApiClient {
@@ -413,6 +1052,10 @@ export class ApiClient {
     return this.request<MeResponse>("/api/v1/me");
   }
 
+  async updateLanguage(language: "en" | "hi"): Promise<{ language: string }> {
+    return this.request("/api/v1/me/language", { method: "PATCH", body: JSON.stringify({ language }) });
+  }
+
   async updateMe(update: { name?: string; phone?: string }): Promise<MeResponse> {
     return this.request<MeResponse>("/api/v1/me", { method: "PATCH", body: JSON.stringify(update) });
   }
@@ -439,6 +1082,12 @@ export class ApiClient {
 
   async getFavorites(location?: Coordinate): Promise<RestaurantSummaryDto[]> {
     return this.request<RestaurantSummaryDto[]>(`/api/v1/favorites${qs({ latitude: location?.latitude, longitude: location?.longitude })}`);
+  }
+
+  async getPersonalizedFeed(location?: Coordinate): Promise<PersonalizedFeed> {
+    return this.request<PersonalizedFeed>(
+      `/api/v1/feed/personalized${qs({ latitude: location?.latitude, longitude: location?.longitude })}`
+    );
   }
 
   async setFavorite(restaurantId: string, isFavorite: boolean): Promise<void> {
@@ -490,6 +1139,10 @@ export class ApiClient {
     await this.request(`/api/v1/orders/${orderId}/rating`, { method: "POST", body: JSON.stringify(rating) });
   }
 
+  async tipOrder(orderId: string, amountPaise: number): Promise<{ id: string; amountPaise: number; createdAt: string }> {
+    return this.request(`/api/v1/orders/${orderId}/tip`, { method: "POST", body: JSON.stringify({ amountPaise }) });
+  }
+
   async getReorder(orderId: string): Promise<ReorderResponse> {
     return this.request<ReorderResponse>(`/api/v1/orders/${orderId}/reorder`);
   }
@@ -520,6 +1173,24 @@ export class ApiClient {
 
   async merchantMarkReady(orderId: string): Promise<void> {
     await this.request(`/api/v1/merchant/orders/${orderId}/ready`, { method: "POST" });
+  }
+
+  async merchantHandoverPickup(orderId: string, pickupCode: string): Promise<void> {
+    await this.request(`/api/v1/merchant/orders/${orderId}/handover`, {
+      method: "POST",
+      body: JSON.stringify({ pickupCode }),
+    });
+  }
+
+  async getMerchantReviews(restaurantId: string): Promise<RestaurantReviewDto[]> {
+    return this.request(`/api/v1/merchant/restaurants/${restaurantId}/reviews`);
+  }
+
+  async replyToReview(restaurantId: string, ratingId: string, reply: string): Promise<void> {
+    await this.request(`/api/v1/merchant/restaurants/${restaurantId}/reviews/${ratingId}/reply`, {
+      method: "POST",
+      body: JSON.stringify({ reply }),
+    });
   }
 
   async merchantSetAcceptingOrders(restaurantId: string, isAcceptingOrders: boolean): Promise<void> {
@@ -586,6 +1257,77 @@ export class ApiClient {
 
   async getAdminOverview(): Promise<any> {
     return this.request("/api/v1/admin/overview");
+  }
+
+  async getAdminOperations(): Promise<AdminOperations> {
+    return this.request("/api/v1/admin/operations");
+  }
+
+  async getAdminZones(): Promise<{ zones: AdminZone[]; cities: Array<{ id: string; name: string; slug: string }> }> {
+    return this.request("/api/v1/admin/zones");
+  }
+
+  async getAdminPlatformConfig(): Promise<{
+    settings: Record<string, any>;
+    entries: Array<{ key: string; value: any; description?: string; updatedAt: string }>;
+  }> {
+    return this.request("/api/v1/admin/config");
+  }
+
+  async updateAdminPlatformConfig(
+    settings: Record<string, any>
+  ): Promise<{ settings: Record<string, any> }> {
+    return this.request("/api/v1/admin/config", {
+      method: "PUT",
+      body: JSON.stringify({ settings }),
+    });
+  }
+
+  async createAdminZone(input: {
+    name: string;
+    cityId: string;
+    centerLatitude: number;
+    centerLongitude: number;
+    radiusMeters?: number;
+    polygon?: Array<{ latitude: number; longitude: number }>;
+  }): Promise<{ zone: { id: string; name: string } }> {
+    return this.request("/api/v1/admin/zones", { method: "POST", body: JSON.stringify(input) });
+  }
+
+  async setAdminZoneActive(zoneId: string, isActive: boolean): Promise<void> {
+    await this.request(`/api/v1/admin/zones/${zoneId}`, { method: "PATCH", body: JSON.stringify({ isActive }) });
+  }
+
+  async createAdminDropPoint(
+    zoneId: string,
+    input: { name: string; latitude: number; longitude: number }
+  ): Promise<{ dropPoint: { id: string; name: string } }> {
+    return this.request(`/api/v1/admin/zones/${zoneId}/drop-points`, { method: "POST", body: JSON.stringify(input) });
+  }
+
+  async getZoneBatches(zoneId: string): Promise<{ candidates: BatchCandidate[]; batches: DispatchBatchRow[] }> {
+    return this.request(`/api/v1/admin/zones/${zoneId}/batches`);
+  }
+
+  async lockZoneBatch(
+    zoneId: string,
+    input: { slotWindow: string; slotStart: string; slotEnd: string; riderId?: string }
+  ): Promise<{ batchId: string; status: string; totalDrops: number; orders: number }> {
+    return this.request(`/api/v1/admin/zones/${zoneId}/batches/lock`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  async assignBatchRider(zoneId: string, batchId: string, riderId: string | null): Promise<{ riderId: string | null }> {
+    return this.request(`/api/v1/admin/zones/${zoneId}/batches/${batchId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ riderId }),
+    });
+  }
+
+  async retryAdminJob(jobId: string): Promise<void> {
+    await this.request(`/api/v1/admin/jobs/${jobId}/retry`, { method: "POST" });
   }
 
   async getAdminRiders(): Promise<any[]> {
@@ -693,6 +1435,107 @@ export class ApiClient {
     return this.request(`/api/v1/merchant/restaurants/${restaurantId}/analytics${qs(range ?? {})}`);
   }
 
+  async getSponsorship(restaurantId: string): Promise<SponsorshipState> {
+    return this.request(`/api/v1/merchant/restaurants/${restaurantId}/sponsorship`);
+  }
+
+  async getSponsorshipAnalytics(restaurantId: string): Promise<SponsorshipAnalytics> {
+    return this.request(`/api/v1/merchant/restaurants/${restaurantId}/sponsorship/analytics`);
+  }
+
+  async updateSponsorshipCampaign(
+    restaurantId: string,
+    input: { maxDailyBudgetPaise?: number; bidPerClickPaise?: number }
+  ): Promise<{ state: SponsorshipState }> {
+    return this.request(`/api/v1/merchant/restaurants/${restaurantId}/sponsorship`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    });
+  }
+
+  async recordSponsorshipEvent(input: {
+    restaurantId: string;
+    eventType: "IMPRESSION" | "CLICK" | "CONVERSION";
+    source?: "SEARCH" | "HOME_FEED" | "COLLECTION" | "CUISINE_RAIL";
+    orderId?: string;
+    orderAmountPaise?: number;
+  }): Promise<{ recorded: boolean }> {
+    return this.request(`/api/v1/sponsorship/events`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  async purchaseSponsorship(restaurantId: string, days: 3 | 7 | 14): Promise<{ sponsorship: { id: string; endsAt: string; amountPaise: number } }> {
+    return this.request(`/api/v1/merchant/restaurants/${restaurantId}/sponsorship`, {
+      method: "POST",
+      body: JSON.stringify({ days }),
+    });
+  }
+
+  async getOrderSplit(orderId: string): Promise<{ split: BillSplit | null }> {
+    return this.request(`/api/v1/orders/${orderId}/split`);
+  }
+
+  async createOrderSplit(orderId: string, parts: number): Promise<{ split: BillSplit }> {
+    return this.request(`/api/v1/orders/${orderId}/split`, { method: "POST", body: JSON.stringify({ parts }) });
+  }
+
+  async getSharedSplit(token: string): Promise<{ split: BillSplit }> {
+    return this.request(`/api/v1/splits/${token}`);
+  }
+
+  async paySharedSplit(token: string): Promise<{ split: BillSplit; paidShare: BillSplitShare }> {
+    return this.request(`/api/v1/splits/${token}`, { method: "POST" });
+  }
+
+  async getMerchantCoupons(restaurantId: string): Promise<MerchantCouponDto[]> {
+    return this.request(`/api/v1/merchant/restaurants/${restaurantId}/coupons`);
+  }
+
+  async createMerchantCoupon(restaurantId: string, input: MerchantCouponInput): Promise<MerchantCouponDto> {
+    return this.request(`/api/v1/merchant/restaurants/${restaurantId}/coupons`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  async setMerchantCouponActive(restaurantId: string, couponId: string, isActive: boolean): Promise<MerchantCouponDto> {
+    return this.request(`/api/v1/merchant/restaurants/${restaurantId}/coupons/${couponId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ isActive }),
+    });
+  }
+
+  async getMerchantSurplus(restaurantId: string): Promise<{ listings: MerchantSurplusListing[] }> {
+    return this.request(`/api/v1/merchant/restaurants/${restaurantId}/surplus`);
+  }
+
+  async createMerchantSurplus(
+    restaurantId: string,
+    input: {
+      title: string;
+      originalValuePaise: number;
+      discountBp: number;
+      platformFlatFeePaise: number;
+      quantity: number;
+      pickupWindowStart: string;
+      pickupWindowEnd: string;
+    }
+  ): Promise<{ listing: MerchantSurplusListing }> {
+    return this.request(`/api/v1/merchant/restaurants/${restaurantId}/surplus`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  async setMerchantSurplusStatus(restaurantId: string, listingId: string, status: "ACTIVE" | "CANCELLED"): Promise<void> {
+    await this.request(`/api/v1/merchant/restaurants/${restaurantId}/surplus/${listingId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    });
+  }
+
   async getMerchantAttributionLink(restaurantId: string): Promise<MerchantAttributionLink> {
     return this.request(`/api/v1/merchant/restaurants/${restaurantId}/attribution-link`);
   }
@@ -707,6 +1550,223 @@ export class ApiClient {
 
   async saveRiderPayoutAccount(account: { accountHolderName: string; ifsc: string; accountNumber: string }): Promise<{ accountLast4: string }> {
     return this.request("/api/v1/rider/payout-account", { method: "PUT", body: JSON.stringify(account) });
+  }
+
+  async getRiderRewards(): Promise<RiderRewardsOverview> {
+    return this.request("/api/v1/rider/rewards");
+  }
+
+  async claimRiderIncentive(incentiveId: string): Promise<{ claimId: string; rewardPaise: number }> {
+    return this.request(`/api/v1/rider/rewards/incentives/${incentiveId}/claim`, { method: "POST" });
+  }
+
+  async bookRiderShift(shiftId: string): Promise<{ bookingId: string }> {
+    return this.request(`/api/v1/rider/rewards/shifts/${shiftId}/book`, { method: "POST" });
+  }
+
+  async cancelRiderShift(shiftId: string): Promise<void> {
+    await this.request(`/api/v1/rider/rewards/shifts/${shiftId}/cancel`, { method: "POST" });
+  }
+
+  async getRiderInsurance(): Promise<{ policy: RiderInsurancePolicy | null; claims: RiderInsuranceClaim[] }> {
+    return this.request("/api/v1/rider/insurance");
+  }
+
+  async enrollRiderInsurance(): Promise<{ policy: RiderInsurancePolicy }> {
+    return this.request("/api/v1/rider/insurance", { method: "POST" });
+  }
+
+  async fileInsuranceClaim(input: {
+    incidentType: "ACCIDENT" | "HOSPITALIZATION" | "VEHICLE_DAMAGE" | "OTHER";
+    incidentDate: string;
+    description: string;
+    claimedPaise: number;
+  }): Promise<{ claim: RiderInsuranceClaim }> {
+    return this.request("/api/v1/rider/insurance/claims", { method: "POST", body: JSON.stringify(input) });
+  }
+
+  async getAdminInsuranceClaims(status?: string): Promise<{ claims: RiderInsuranceClaim[] }> {
+    return this.request(`/api/v1/admin/insurance/claims${qs({ status })}`);
+  }
+
+  async getRiderEquipment(): Promise<{ equipment: RiderEquipment[] }> {
+    return this.request("/api/v1/rider/equipment");
+  }
+
+  async issueRiderEquipment(input: {
+    riderId: string;
+    itemType: "HELMET" | "DELIVERY_BAG" | "T_SHIRT" | "INSURANCE_CARD";
+    size?: string;
+    notes?: string;
+  }): Promise<{ equipment: RiderEquipment }> {
+    return this.request("/api/v1/admin/rider-equipment", { method: "POST", body: JSON.stringify(input) });
+  }
+
+  async getRiderEquipmentForAdmin(riderId: string): Promise<{ equipment: RiderEquipment[] }> {
+    return this.request(`/api/v1/admin/rider-equipment/${riderId}`);
+  }
+
+  async updateRiderEquipmentStatus(
+    riderId: string,
+    itemType: "HELMET" | "DELIVERY_BAG" | "T_SHIRT" | "INSURANCE_CARD",
+    status: "RETURNED" | "LOST" | "RENEWED",
+    chargeRider?: boolean
+  ): Promise<{ equipment: RiderEquipment }> {
+    return this.request(`/api/v1/admin/rider-equipment/${riderId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ itemType, status, chargeRider }),
+    });
+  }
+
+  async requestRiderEquipmentRenewal(
+    itemType: "HELMET" | "DELIVERY_BAG" | "T_SHIRT" | "INSURANCE_CARD"
+  ): Promise<{ equipment: RiderEquipment; scheduled: boolean }> {
+    return this.request("/api/v1/rider/equipment", {
+      method: "POST",
+      body: JSON.stringify({ itemType }),
+    });
+  }
+
+  async reviewInsuranceClaim(
+    claimId: string,
+    input: { status: "APPROVED" | "REJECTED"; approvedPaise?: number; note?: string }
+  ): Promise<{ claim: RiderInsuranceClaim }> {
+    return this.request(`/api/v1/admin/insurance/claims/${claimId}/review`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  async getMealPlans(): Promise<{ plans: MealPlan[] }> {
+    return this.request("/api/v1/meal-pass/plans");
+  }
+
+  async getCampuses(): Promise<{ campuses: Campus[] }> {
+    return this.request("/api/v1/campus");
+  }
+
+  async getMealPasses(): Promise<{ passes: MealPass[] }> {
+    return this.request("/api/v1/meal-pass/passes");
+  }
+
+  async getMealDeliveries(): Promise<{ deliveries: ScheduledMealDelivery[] }> {
+    return this.request("/api/v1/meal-pass/deliveries");
+  }
+
+  async purchaseMealPass(planId: string, dropPointId?: string): Promise<{
+    pass: { id: string; planId: string; mealsRemaining: number; status: string; expiresAt: string };
+    plan: { id: string; name: string; totalMeals: number };
+    scheduledDeliveries: number;
+    paymentMethod: string;
+  }> {
+    return this.request("/api/v1/meal-pass/passes", { method: "POST", body: JSON.stringify({ planId, dropPointId }) });
+  }
+
+  async skipMealDelivery(deliveryId: string): Promise<{ status: string; surplusListingId?: string; mealsRemaining: number }> {
+    return this.request(`/api/v1/meal-pass/deliveries/${deliveryId}/skip`, { method: "POST" });
+  }
+
+  async getCorporateMembership(): Promise<CorporateMembership> {
+    return this.request("/api/v1/corporate/me");
+  }
+
+  async getCorporateSplit(accountId: string, orderTotalPaise: number): Promise<CorporateSplit> {
+    return this.request(`/api/v1/corporate/split${qs({ accountId, orderTotalPaise })}`);
+  }
+
+  async createCorporateOrder(quoteId: string, corporateAccountId: string): Promise<{
+    orderId: string;
+    orderNumber: string;
+    payablePaise: number;
+    corporateCoveredPaise: number;
+    corporateBilledPaise: number;
+    managementFeePaise: number;
+    paymentMethod: string;
+  }> {
+    return this.request("/api/v1/corporate/checkout", {
+      method: "POST",
+      body: JSON.stringify({ quoteId, corporateAccountId }),
+    });
+  }
+
+  async getCorporateAccounts(): Promise<{ accounts: CorporateAdminAccount[] }> {
+    return this.request("/api/v1/admin/corporate/accounts");
+  }
+
+  async getCorporateDropPoints(): Promise<{ dropPoints: CorporateDropPoint[] }> {
+    return this.request("/api/v1/admin/corporate/drop-points");
+  }
+
+  async createCorporateAccount(input: {
+    companyName: string;
+    gstin: string;
+    billingAddress: string;
+    dropPointId: string;
+    dailyAllowancePerEmployeePaise: number;
+    subsidyPercentageBp?: number;
+    corporateManagementFeeBp?: number;
+    creditLimitPaise?: number;
+  }): Promise<{ account: { id: string } }> {
+    return this.request("/api/v1/admin/corporate/accounts", { method: "POST", body: JSON.stringify(input) });
+  }
+
+  async addCorporateEmployee(
+    accountId: string,
+    input: { email: string; costCenterCode: string; emailDomain?: string }
+  ): Promise<{ employee: { id: string } }> {
+    return this.request(`/api/v1/admin/corporate/accounts/${accountId}/employees`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  async generateCorporateInvoice(accountId: string, month?: string): Promise<{ invoice: { invoice_number: string; total_paise: number } }> {
+    return this.request(`/api/v1/admin/corporate/accounts/${accountId}/invoices`, {
+      method: "POST",
+      body: JSON.stringify({ month }),
+    });
+  }
+
+  async getGiftCards(): Promise<{ cards: GiftCard[] }> {
+    return this.request("/api/v1/gift-cards");
+  }
+
+  async purchaseGiftCard(input: {
+    amountPaise: number;
+    recipientName: string;
+    recipientContact?: string;
+    message?: string;
+  }): Promise<{ card: GiftCard }> {
+    return this.request("/api/v1/gift-cards", { method: "POST", body: JSON.stringify(input) });
+  }
+
+  async redeemGiftCard(code: string): Promise<{ card: GiftCard; balancePaise: number }> {
+    return this.request("/api/v1/gift-cards/redeem", { method: "POST", body: JSON.stringify({ code }) });
+  }
+
+  async getDonations(): Promise<{ totalPaise: number; donations: Donation[] }> {
+    return this.request("/api/v1/donations");
+  }
+
+  async giveDonation(amountPaise: number): Promise<{ donation: Donation }> {
+    return this.request("/api/v1/donations", { method: "POST", body: JSON.stringify({ amountPaise }) });
+  }
+
+  async getAddonUpsell(parentOrderId: string): Promise<{ parentOrderId: string; skus: AddonUpsellSku[] }> {
+    return this.request(`/api/v1/addons/upsell${qs({ parentOrderId })}`);
+  }
+
+  async addOneTapAddon(parentOrderId: string, addonSkuId: string, quantity?: number): Promise<{
+    orderId: string;
+    orderNumber: string;
+    bagLabel: string;
+    payablePaise: number;
+    paymentMethod: string;
+  }> {
+    return this.request("/api/v1/addons", {
+      method: "POST",
+      body: JSON.stringify({ parentOrderId, addonSkuId, quantity }),
+    });
   }
 
   async getAdminPayouts(status?: Payout["status"]): Promise<Payout[]> {
@@ -760,5 +1820,358 @@ export class ApiClient {
 
   async deleteAccount(): Promise<void> {
     await this.request("/api/v1/me", { method: "DELETE", body: JSON.stringify({ confirm: "DELETE" }) });
+  }
+
+  // 13. Wallet, referrals and rider KYC
+  async getWallet(): Promise<WalletSummaryDto> {
+    return this.request("/api/v1/wallet");
+  }
+
+  async getReferrals(): Promise<ReferralSummaryDto> {
+    return this.request("/api/v1/referrals");
+  }
+
+  async getSurplusBags(): Promise<SurplusBagDto[]> {
+    const res = await this.request<{ listings: SurplusBagDto[] }>("/api/v1/surplus");
+    return res.listings;
+  }
+
+  async purchaseSurplusBag(listingId: string): Promise<{
+    orderId: string;
+    orderNumber: string;
+    payablePaise: number;
+    listingId: string;
+    restoredPassCredit: boolean;
+    paymentMethod: string;
+  }> {
+    return this.request(`/api/v1/surplus/${listingId}/purchase`, { method: "POST", body: JSON.stringify({}) });
+  }
+
+  async getMembership(): Promise<MembershipOverviewDto> {
+    return this.request("/api/v1/membership");
+  }
+
+  async purchaseMembership(planId: string): Promise<{
+    purchaseId: string;
+    razorpayOrderId: string;
+    razorpayKeyId: string;
+    amountPaise: number;
+    simulatedPayment: boolean;
+  }> {
+    return this.request("/api/v1/membership/purchase", { method: "POST", body: JSON.stringify({ planId }) });
+  }
+
+  async verifyMembershipPayment(input: {
+    purchaseId: string;
+    razorpayOrderId: string;
+    razorpayPaymentId: string;
+    razorpaySignature: string;
+  }): Promise<{ success: boolean; alreadyProcessed: boolean; membership: MembershipOverviewDto["active"] }> {
+    return this.request("/api/v1/membership/verify", { method: "POST", body: JSON.stringify(input) });
+  }
+
+  async getNotifications(limit = 30): Promise<{ notifications: NotificationDto[]; unreadCount: number }> {
+    return this.request(`/api/v1/notifications${qs({ limit })}`);
+  }
+
+  async markNotificationsRead(ids?: string[]): Promise<{ updated: number }> {
+    return this.request("/api/v1/notifications/read", { method: "POST", body: JSON.stringify({ ids }) });
+  }
+
+  async applyReferralCode(code: string): Promise<ReferralSummaryDto["referrals"][number]> {
+    return this.request("/api/v1/referrals/apply", { method: "POST", body: JSON.stringify({ code }) });
+  }
+
+  async getRiderVerification(): Promise<RiderVerificationDto> {
+    return this.request("/api/v1/rider/verification");
+  }
+
+  async uploadRiderDocument(file: Blob): Promise<{ url: string; storage?: string }> {
+    return this.request("/api/v1/rider/verification/upload", {
+      method: "POST",
+      body: file,
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+    });
+  }
+
+  async registerRiderDocument(docType: string, fileUrl: string): Promise<RiderVerificationDto> {
+    return this.request("/api/v1/rider/verification", { method: "POST", body: JSON.stringify({ docType, fileUrl }) });
+  }
+
+  async submitRiderVerification(aadhaarLast4: string): Promise<RiderVerificationDto> {
+    return this.request("/api/v1/rider/verification/submit", {
+      method: "POST",
+      body: JSON.stringify({ aadhaarLast4, consentBackgroundCheck: true }),
+    });
+  }
+
+  async getAdminRiderVerifications(status?: RiderVerificationDto["status"]): Promise<AdminRiderVerificationRow[]> {
+    return this.request(`/api/v1/admin/rider-verifications${qs({ status })}`);
+  }
+
+  async getAdminRiderVerification(riderId: string): Promise<RiderVerificationDto> {
+    return this.request(`/api/v1/admin/rider-verifications/${riderId}`);
+  }
+
+  async reviewRiderVerification(riderId: string, decision: "APPROVE" | "REJECT" | "SUSPEND", note: string): Promise<RiderVerificationDto> {
+    return this.request(`/api/v1/admin/rider-verifications/${riderId}/review`, {
+      method: "POST",
+      body: JSON.stringify({ decision, note }),
+    });
+  }
+
+  async getAdminReferrals(): Promise<ReferralSummaryDto["referrals"]> {
+    return this.request("/api/v1/admin/referrals");
+  }
+
+  // 14. In-order chat, delivery proof and problems
+  async getOrderMessages(orderId: string, channel: "CUSTOMER_RIDER" | "CUSTOMER_MERCHANT"): Promise<OrderMessageDto[]> {
+    const res = await this.request<{ messages: OrderMessageDto[] }>(`/api/v1/orders/${orderId}/messages${qs({ channel })}`);
+    return res.messages;
+  }
+
+  async sendOrderMessage(orderId: string, channel: "CUSTOMER_RIDER" | "CUSTOMER_MERCHANT", body: string): Promise<OrderMessageDto> {
+    return this.request(`/api/v1/orders/${orderId}/messages`, { method: "POST", body: JSON.stringify({ channel, body }) });
+  }
+
+  async getOrderIssues(orderId: string): Promise<OrderIssueDto[]> {
+    return this.request(`/api/v1/orders/${orderId}/issues`);
+  }
+
+  async createOrderIssue(
+    orderId: string,
+    input: { category: string; description: string; itemIds: string[]; photos?: string[] }
+  ): Promise<OrderIssueDto> {
+    return this.request(`/api/v1/orders/${orderId}/issues`, {
+      method: "POST",
+      body: JSON.stringify({ ...input, photos: input.photos ?? [] }),
+    });
+  }
+
+  async getSearchSuggestions(q: string): Promise<Array<{ text: string; type: "restaurant" | "dish" | "cuisine"; targetId?: string; targetSlug?: string }>> {
+    return this.request(`/api/v1/search/suggestions${qs({ q })}`);
+  }
+
+  async getOrderProof(orderId: string): Promise<{ photoUrl?: string; latitude?: number; longitude?: number; note?: string; createdAt: string } | null> {
+    return this.request(`/api/v1/orders/${orderId}/proof`);
+  }
+
+  async shareOrder(orderId: string): Promise<{ url: string; token: string; expiresAt: string }> {
+    return this.request(`/api/v1/orders/${orderId}/share`, { method: "POST" });
+  }
+
+  async uploadImage(file: Blob): Promise<{ url: string; storage?: string }> {
+    return this.request("/api/v1/uploads", {
+      method: "POST",
+      body: file,
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+    });
+  }
+
+  async uploadProofImage(file: Blob): Promise<{ url: string; storage?: string }> {
+    return this.uploadImage(file);
+  }
+
+  async saveDeliveryProof(
+    orderId: string,
+    input: { photoUrl?: string; latitude?: number; longitude?: number; note?: string }
+  ): Promise<{ id: string; photoUrl?: string }> {
+    return this.request(`/api/v1/rider/trip/proof${qs({ orderId })}`, { method: "POST", body: JSON.stringify(input) });
+  }
+
+  async getAdminIssues(status?: OrderIssueDto["status"]): Promise<OrderIssueDto[]> {
+    return this.request(`/api/v1/admin/issues${qs({ status })}`);
+  }
+
+  async resolveOrderIssue(
+    issueId: string,
+    input: { resolution: string; walletCreditPaise?: number; refundAmountPaise?: number; couponCode?: string; note: string }
+  ): Promise<OrderIssueDto> {
+    return this.request(`/api/v1/admin/issues/${issueId}/resolve`, { method: "POST", body: JSON.stringify(input) });
+  }
+
+  // 15. Dining out
+  async getDiningRestaurants(params: { latitude?: number; longitude?: number; cuisine?: string } = {}): Promise<DiningRestaurantDto[]> {
+    return this.request(`/api/v1/dining/restaurants${qs(params)}`);
+  }
+
+  async getDiningAvailability(restaurantId: string, date?: string): Promise<DiningAvailabilityDto> {
+    return this.request(`/api/v1/dining/restaurants/${restaurantId}${qs({ date })}`);
+  }
+
+  async createDiningReservation(input: {
+    restaurantId: string;
+    date: string;
+    slot: string;
+    partySize: number;
+    occasion?: string;
+    specialRequest?: string;
+  }): Promise<DiningReservationDto> {
+    return this.request("/api/v1/dining/reservations", { method: "POST", body: JSON.stringify(input) });
+  }
+
+  async getMyDiningReservations(): Promise<DiningReservationDto[]> {
+    return this.request("/api/v1/dining/reservations");
+  }
+
+  async cancelDiningReservation(reservationId: string): Promise<DiningReservationDto> {
+    return this.request(`/api/v1/dining/reservations/${reservationId}`, { method: "DELETE" });
+  }
+
+  async getMerchantDining(restaurantId: string, date?: string): Promise<DiningReservationDto[]> {
+    return this.request(`/api/v1/merchant/restaurants/${restaurantId}/dining${qs({ date })}`);
+  }
+
+  async updateDiningStatus(restaurantId: string, reservationId: string, status: DiningReservationDto["status"]): Promise<DiningReservationDto> {
+    return this.request(`/api/v1/merchant/restaurants/${restaurantId}/dining/${reservationId}/status`, {
+      method: "POST",
+      body: JSON.stringify({ status }),
+    });
+  }
+
+  // 16. Notification preferences and safety
+  async getNotificationPreferences(): Promise<NotificationPreferencesDto> {
+    return this.request("/api/v1/me/notifications");
+  }
+
+  async updateNotificationPreferences(patch: Partial<NotificationPreferencesDto>): Promise<NotificationPreferencesDto> {
+    return this.request("/api/v1/me/notifications", { method: "PATCH", body: JSON.stringify(patch) });
+  }
+
+  async getSafetyContacts(): Promise<SafetyContactDto[]> {
+    return this.request("/api/v1/me/safety-contacts");
+  }
+
+  async addSafetyContact(input: { name: string; phone: string; relationship?: string; isPrimary?: boolean }): Promise<SafetyContactDto> {
+    return this.request("/api/v1/me/safety-contacts", {
+      method: "POST",
+      body: JSON.stringify({ isPrimary: false, ...input }),
+    });
+  }
+
+  async deleteSafetyContact(contactId: string): Promise<void> {
+    await this.request(`/api/v1/me/safety-contacts/${contactId}`, { method: "DELETE" });
+  }
+
+  async createSafetyEvent(input: {
+    eventType: "SOS" | "TRACKING_SHARED" | "DELIVERY_CONCERN";
+    orderId?: string;
+    latitude?: number;
+    longitude?: number;
+    note?: string;
+  }): Promise<{ id: string; eventType: string; status: string; createdAt: string }> {
+    return this.request("/api/v1/safety/events", { method: "POST", body: JSON.stringify(input) });
+  }
+
+  // 17. Group ordering
+  async createGroupCart(restaurantId: string): Promise<GroupCartDto> {
+    const data = await this.request<{ groupCart: GroupCartDto }>("/api/v1/group-carts", {
+      method: "POST",
+      body: JSON.stringify({ restaurantId }),
+    });
+    return data.groupCart;
+  }
+
+  async getGroupCart(code: string): Promise<GroupCartDto> {
+    const data = await this.request<{ groupCart: GroupCartDto }>(
+      `/api/v1/group-carts/${encodeURIComponent(code)}`
+    );
+    return data.groupCart;
+  }
+
+  async addGroupCartItem(
+    code: string,
+    input: { menuItemId: string; variantId?: string; selectedOptionIds?: string[]; quantity: number; notes?: string }
+  ): Promise<GroupCartDto> {
+    const data = await this.request<{ groupCart: GroupCartDto }>(
+      `/api/v1/group-carts/${encodeURIComponent(code)}/items`,
+      { method: "POST", body: JSON.stringify(input) }
+    );
+    return data.groupCart;
+  }
+
+  async updateGroupCartItem(code: string, itemId: string, quantity: number): Promise<GroupCartDto> {
+    const data = await this.request<{ groupCart: GroupCartDto }>(
+      `/api/v1/group-carts/${encodeURIComponent(code)}/items/${itemId}`,
+      { method: "PATCH", body: JSON.stringify({ quantity }) }
+    );
+    return data.groupCart;
+  }
+
+  async removeGroupCartItem(code: string, itemId: string): Promise<GroupCartDto> {
+    const data = await this.request<{ groupCart: GroupCartDto }>(
+      `/api/v1/group-carts/${encodeURIComponent(code)}/items/${itemId}`,
+      { method: "DELETE" }
+    );
+    return data.groupCart;
+  }
+
+  async lockGroupCart(code: string): Promise<GroupCartDto> {
+    const data = await this.request<{ groupCart: GroupCartDto }>(
+      `/api/v1/group-carts/${encodeURIComponent(code)}/lock`,
+      { method: "POST" }
+    );
+    return data.groupCart;
+  }
+
+  async reopenGroupCart(code: string): Promise<GroupCartDto> {
+    const data = await this.request<{ groupCart: GroupCartDto }>(
+      `/api/v1/group-carts/${encodeURIComponent(code)}/reopen`,
+      { method: "POST" }
+    );
+    return data.groupCart;
+  }
+
+  async completeGroupCart(code: string, orderId: string): Promise<GroupCartDto> {
+    const data = await this.request<{ groupCart: GroupCartDto }>(
+      `/api/v1/group-carts/${encodeURIComponent(code)}/complete`,
+      { method: "POST", body: JSON.stringify({ orderId }) }
+    );
+    return data.groupCart;
+  }
+
+  // 18. Dining events / Zomato Live
+  async getDiningEvents(): Promise<DiningEventDto[]> {
+    const data = await this.request<{ events: DiningEventDto[] }>("/api/v1/events");
+    return data.events;
+  }
+
+  async getDiningEvent(eventId: string): Promise<DiningEventDto> {
+    const data = await this.request<{ event: DiningEventDto }>(`/api/v1/events/${eventId}`);
+    return data.event;
+  }
+
+  async getDiningEventBookings(): Promise<DiningEventBookingDto[]> {
+    const data = await this.request<{ bookings: DiningEventBookingDto[] }>("/api/v1/events/bookings");
+    return data.bookings;
+  }
+
+  async bookDiningEvent(eventId: string, quantity: number): Promise<DiningEventBookingDto> {
+    const data = await this.request<{ booking: DiningEventBookingDto }>(
+      `/api/v1/events/${eventId}/book`,
+      { method: "POST", body: JSON.stringify({ quantity }) }
+    );
+    return data.booking;
+  }
+
+  async cancelDiningEventBooking(bookingId: string): Promise<DiningEventBookingDto> {
+    const data = await this.request<{ booking: DiningEventBookingDto }>(
+      `/api/v1/events/bookings/${bookingId}/cancel`,
+      { method: "POST" }
+    );
+    return data.booking;
+  }
+
+  // 19. Curated collections
+  async getCollections(): Promise<CollectionSummaryDto[]> {
+    const data = await this.request<{ collections: CollectionSummaryDto[] }>("/api/v1/collections");
+    return data.collections;
+  }
+
+  async getCollection(slug: string): Promise<CollectionDetailDto> {
+    const data = await this.request<{ collection: CollectionDetailDto }>(
+      `/api/v1/collections/${encodeURIComponent(slug)}`
+    );
+    return data.collection;
   }
 }

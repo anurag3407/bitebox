@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import QRCode from "qrcode";
-import { Copy, Download, MessageCircle, RefreshCw, ShieldCheck } from "lucide-react";
+import { Copy, Download, MessageCircle, RefreshCw, ShieldCheck, TrendingUp } from "lucide-react";
 import { useApi, errorMessage } from "@/lib/api";
 import { useToast } from "@/components/ui/toast";
 import { PageSpinner, SafeImage, Stat } from "@/components/ui/misc";
@@ -37,6 +37,49 @@ export function MerchantGrowthPanel({ restaurantId }: { restaurantId: string }) 
     queryFn: () => api.getMerchantAttributionLink(restaurantId),
   });
   const [qr, setQr] = useState<string | null>(null);
+  const sponsorship = useQuery({ queryKey: ["merchant-sponsorship", restaurantId], queryFn: () => api.getSponsorship(restaurantId) });
+  const adAnalytics = useQuery({ queryKey: ["merchant-ad-analytics", restaurantId], queryFn: () => api.getSponsorshipAnalytics(restaurantId) });
+  const [buyingDays, setBuyingDays] = useState<number | null>(null);
+  const [dailyBudget, setDailyBudget] = useState<number>(99);
+  const [bidCpc, setBidCpc] = useState<number>(5);
+  const [savingCampaign, setSavingCampaign] = useState(false);
+
+  useEffect(() => {
+    if (sponsorship.data) {
+      if (sponsorship.data.maxDailyBudgetPaise) setDailyBudget(Math.round(sponsorship.data.maxDailyBudgetPaise / 100));
+      if (sponsorship.data.bidPerClickPaise) setBidCpc(Math.round(sponsorship.data.bidPerClickPaise / 100));
+    }
+  }, [sponsorship.data]);
+
+  const saveCampaignSettings = async () => {
+    setSavingCampaign(true);
+    try {
+      await api.updateSponsorshipCampaign(restaurantId, {
+        maxDailyBudgetPaise: dailyBudget * 100,
+        bidPerClickPaise: bidCpc * 100,
+      });
+      await sponsorship.refetch();
+      await adAnalytics.refetch();
+      toast("Ad campaign settings updated", "success");
+    } catch (err) {
+      toast(errorMessage(err), "error");
+    } finally {
+      setSavingCampaign(false);
+    }
+  };
+
+  const buyBoost = async (days: 3 | 7 | 14) => {
+    setBuyingDays(days);
+    try {
+      await api.purchaseSponsorship(restaurantId, days);
+      await sponsorship.refetch();
+      toast("Sponsored placement activated", "success");
+    } catch (err) {
+      toast(errorMessage(err), "error");
+    } finally {
+      setBuyingDays(null);
+    }
+  };
 
   useEffect(() => {
     if (!link.data?.url) return;
@@ -88,6 +131,109 @@ export function MerchantGrowthPanel({ restaurantId }: { restaurantId: string }) 
           <RefreshCw className={`h-3.5 w-3.5 ${analytics.isFetching ? "animate-spin" : ""}`} /> Refresh
         </button>
       </div>
+
+      <section className="rounded-3xl border border-line bg-white p-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h3 className="flex items-center gap-2 text-base font-semibold text-ink">
+              <TrendingUp className="h-4 w-4" /> Sponsored placement
+            </h3>
+            <p className="mt-1 max-w-xl text-sm text-ink-muted">
+              Appear above organic listings with a “Sponsored” label. Paid from your BiteBox Credits at {inr(sponsorship.data?.dailyRatePaise ?? 9900)}/day.
+            </p>
+          </div>
+          {sponsorship.data?.active && (
+            <span className="badge badge-success">
+              Active · {sponsorship.data.daysRemaining} days left
+            </span>
+          )}
+        </div>
+        {!sponsorship.data?.active && (
+          <div className="mt-4 flex flex-wrap gap-2">
+            {([3, 7, 14] as const).map((days) => (
+              <button
+                key={days}
+                className="btn btn-secondary"
+                disabled={buyingDays !== null}
+                onClick={() => buyBoost(days)}
+              >
+                {buyingDays === days ? "Buying…" : `${days} days · ${inr(days * (sponsorship.data?.dailyRatePaise ?? 9900))}`}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Ad Performance Analytics & Campaign Budget */}
+        {adAnalytics.data && (
+          <div className="mt-6 border-t border-line pt-6 space-y-5">
+            <h4 className="text-sm font-semibold text-ink">Ad performance & campaign stats (Last 30 days)</h4>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="rounded-xl border border-line bg-surface-subtle p-3">
+                <span className="text-xs text-ink-muted">Impressions</span>
+                <p className="mt-1 text-lg font-bold text-ink">{adAnalytics.data.totalImpressions.toLocaleString("en-IN")}</p>
+                <span className="text-[11px] text-ink-muted">Discovery views</span>
+              </div>
+              <div className="rounded-xl border border-line bg-surface-subtle p-3">
+                <span className="text-xs text-ink-muted">Clicks</span>
+                <p className="mt-1 text-lg font-bold text-ink">{adAnalytics.data.totalClicks.toLocaleString("en-IN")}</p>
+                <span className="text-[11px] text-ink-muted">{adAnalytics.data.ctrPercent}% CTR</span>
+              </div>
+              <div className="rounded-xl border border-line bg-surface-subtle p-3">
+                <span className="text-xs text-ink-muted">Ad Orders</span>
+                <p className="mt-1 text-lg font-bold text-ink">{adAnalytics.data.conversions}</p>
+                <span className="text-[11px] text-ink-muted">{adAnalytics.data.conversionRatePercent}% CVR</span>
+              </div>
+              <div className="rounded-xl border border-line bg-surface-subtle p-3">
+                <span className="text-xs text-ink-muted">ROAS</span>
+                <p className="mt-1 text-lg font-bold text-emerald-600">{adAnalytics.data.roas > 0 ? `${adAnalytics.data.roas}x` : "—"}</p>
+                <span className="text-[11px] text-ink-muted">{inr(adAnalytics.data.totalSalesPaise)} ad sales</span>
+              </div>
+            </div>
+
+            {sponsorship.data?.active && (
+              <div className="rounded-2xl border border-line/80 bg-surface p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h5 className="text-xs font-semibold uppercase tracking-wider text-ink-muted">Campaign Bidding & Budget</h5>
+                    <p className="text-xs text-ink-soft">Control daily expenditure caps and maximum CPC click bids.</p>
+                  </div>
+                  <button
+                    onClick={saveCampaignSettings}
+                    disabled={savingCampaign}
+                    className="btn btn-outline btn-xs"
+                  >
+                    {savingCampaign ? "Saving…" : "Save settings"}
+                  </button>
+                </div>
+                <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-xs font-medium text-ink-muted">Daily budget cap (₹)</label>
+                    <input
+                      type="number"
+                      min={10}
+                      max={5000}
+                      value={dailyBudget}
+                      onChange={(e) => setDailyBudget(Number(e.target.value))}
+                      className="input input-sm mt-1 w-full"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-ink-muted">Max bid per click (₹ CPC)</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={50}
+                      value={bidCpc}
+                      onChange={(e) => setBidCpc(Number(e.target.value))}
+                      className="input input-sm mt-1 w-full"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
         <Metric label="Saved vs 30%" value={inr(saved)} sub={saved >= 0 ? "vs incumbent take rate" : "fees above benchmark"} tone={saved >= 0 ? "good" : "warn"} />

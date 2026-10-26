@@ -4,15 +4,15 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, MapPin, Minus, Plus, Search, Share2, Star } from "lucide-react";
+import { ArrowLeft, MapPin, Minus, Plus, Search, Share2, Star, Users } from "lucide-react";
 import { MenuItemDto, RestaurantDetailDto } from "@startup/contracts";
 import { AddItemInput, useCartStore } from "@/features/cart/cart-store";
 import { useLocationStore } from "@/features/location/location-store";
 import { ItemCustomizerModal } from "@/components/menu/ItemCustomizerModal";
 import { Modal } from "@/components/ui/modal";
-import { EmptyState, SafeImage, VegMark } from "@/components/ui/misc";
+import { EmptyState, SafeImage, Spinner, VegMark } from "@/components/ui/misc";
 import { useToast } from "@/components/ui/toast";
-import { ApiError, useApi } from "@/lib/api";
+import { ApiError, errorMessage, useApi } from "@/lib/api";
 import { formatRupees, timeAgo } from "@/lib/format";
 
 function QuantityControl({
@@ -96,6 +96,7 @@ export default function RestaurantMenuPage() {
   const [customizingItem, setCustomizingItem] = useState<MenuItemDto | null>(null);
   const [conflict, setConflict] = useState<{ pending: AddItemInput; other: string } | null>(null);
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  const [startingGroup, setStartingGroup] = useState(false);
 
   const restaurantQuery = useQuery({ queryKey: ["restaurant", slug], queryFn: () => api.getRestaurantBySlug(slug) });
   const restaurant = restaurantQuery.data;
@@ -179,6 +180,17 @@ export default function RestaurantMenuPage() {
       // user cancelled the share sheet
     }
   };
+  const startGroupOrder = async () => {
+    setStartingGroup(true);
+    try {
+      const group = await api.createGroupCart(restaurant.id);
+      router.push(`/group/${group.code}`);
+    } catch (err) {
+      toast(errorMessage(err), "error");
+    } finally {
+      setStartingGroup(false);
+    }
+  };
   const jumpTo = (id: string) => document.getElementById(`cat-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
   const eta = serviceability.data?.estimatedDeliveryMinutes
     ? `${serviceability.data.estimatedDeliveryMinutes} min`
@@ -190,14 +202,33 @@ export default function RestaurantMenuPage() {
         <Link href="/" className="btn btn-ghost btn-sm -ml-4 gap-1.5">
           <ArrowLeft className="h-4 w-4" /> All restaurants
         </Link>
-        <button onClick={share} aria-label="Share restaurant" className="btn btn-ghost btn-icon -mr-2">
-          <Share2 className="h-[18px] w-[18px]" />
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={startGroupOrder} disabled={startingGroup} className="btn btn-outline btn-sm gap-1.5">
+            {startingGroup ? <Spinner /> : <Users className="h-4 w-4" />} Group order
+          </button>
+          <button onClick={share} aria-label="Share restaurant" className="btn btn-ghost btn-icon -mr-2">
+            <Share2 className="h-[18px] w-[18px]" />
+          </button>
+        </div>
       </div>
 
       <div className="aspect-[16/9] overflow-hidden rounded-3xl bg-subtle sm:aspect-[21/8]">
         <SafeImage src={restaurant.heroImageUrl} alt={restaurant.name} className="h-full w-full object-cover" />
       </div>
+      {restaurant.gallery.filter(
+        (src) => src.split("?")[0] !== restaurant.heroImageUrl?.split("?")[0]
+      ).length > 0 && (
+        <div className="no-scrollbar mt-3 flex gap-2 overflow-x-auto">
+          {restaurant.gallery
+            .filter((src) => src.split("?")[0] !== restaurant.heroImageUrl?.split("?")[0])
+            .slice(0, 6)
+            .map((src, i) => (
+              <a key={`${src}-${i}`} href={src} target="_blank" rel="noreferrer" className="shrink-0">
+                <SafeImage src={src} alt={`${restaurant.name} photo ${i + 1}`} className="h-20 w-28 rounded-2xl object-cover transition-opacity hover:opacity-85 sm:h-24 sm:w-36" />
+              </a>
+            ))}
+        </div>
+      )}
 
       <header className="mt-8 flex flex-col gap-6 sm:mt-10 md:flex-row md:items-end md:justify-between">
         <div className="min-w-0">
@@ -209,6 +240,15 @@ export default function RestaurantMenuPage() {
           <p className="mt-1.5 flex items-center gap-1.5 text-sm text-ink-muted">
             <MapPin className="h-4 w-4 shrink-0" /> <span className="truncate">{restaurant.addressText}</span>
           </p>
+          {restaurant.amenities.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {restaurant.amenities.map((a) => (
+                <span key={a} className="badge badge-neutral">
+                  {a}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
         <dl className="flex shrink-0 gap-8 sm:gap-10">
           <div>
@@ -226,6 +266,12 @@ export default function RestaurantMenuPage() {
             <dt className="text-xs text-ink-muted">For one</dt>
             <dd className="mt-1 text-lg font-semibold text-ink tabular">{formatRupees(restaurant.avgPriceForOnePaise)}</dd>
           </div>
+          {restaurant.hygieneRating && (
+            <div>
+              <dt className="text-xs text-ink-muted">Hygiene</dt>
+              <dd className="mt-1 text-lg font-semibold text-ink tabular">{restaurant.hygieneRating}/5</dd>
+            </div>
+          )}
         </dl>
       </header>
 
@@ -312,6 +358,15 @@ export default function RestaurantMenuPage() {
                           {item.variants.length > 0 ? `from ${formatRupees(Math.min(...item.variants.map((v) => v.pricePaise)))}` : formatRupees(item.pricePaise)}
                         </p>
                         {item.description && <p className="mt-2 line-clamp-2 max-w-xl text-sm leading-relaxed text-ink-muted">{item.description}</p>}
+                        {(() => {
+                          const meta = [
+                            item.serves ? `Serves ${item.serves}` : null,
+                            item.nutrition?.calories ? `${item.nutrition.calories} kcal` : null,
+                            item.spiceLevel ? ["", "Mild", "Spicy", "Extra spicy"][item.spiceLevel] : null,
+                            item.allergens.length ? `Contains ${item.allergens.join(", ").toLowerCase()}` : null,
+                          ].filter(Boolean);
+                          return meta.length > 0 ? <p className="mt-2 text-xs text-ink-muted">{meta.join(" · ")}</p> : null;
+                        })()}
                       </div>
                       <div className="flex w-28 shrink-0 flex-col items-center sm:w-36">
                         <SafeImage src={item.imageUrl} alt={item.name} className="aspect-square w-full rounded-2xl object-cover" />
@@ -345,6 +400,30 @@ export default function RestaurantMenuPage() {
                       </span>
                     </div>
                     {r.comment && <p className="mt-3 text-sm leading-relaxed text-ink-soft">{r.comment}</p>}
+                    {r.photos.length > 0 && (
+                      <div className="mt-4 flex gap-2">
+                        {r.photos.map((src, i) => (
+                          <a key={i} href={src} target="_blank" rel="noreferrer">
+                            <SafeImage src={src} alt={`Review photo ${i + 1}`} className="h-20 w-20 rounded-xl object-cover sm:h-24 sm:w-24" />
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                    {r.dishRatings.length > 0 && (
+                      <div className="mt-3 flex flex-wrap gap-1.5">
+                        {r.dishRatings.map((d) => (
+                          <span key={d.menuItemId} className="badge badge-neutral">
+                            {d.name} · {d.rating}/5
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {r.restaurantReply && (
+                      <div className="mt-4 rounded-2xl bg-white px-4 py-3">
+                        <p className="text-[11px] font-medium uppercase tracking-wide text-ink-muted">Response from {restaurant.name}</p>
+                        <p className="mt-1 text-sm leading-relaxed text-ink-soft">{r.restaurantReply}</p>
+                      </div>
+                    )}
                     <p className="mt-3 text-xs text-ink-muted">{timeAgo(r.createdAt)}</p>
                   </li>
                 ))}

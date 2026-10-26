@@ -53,10 +53,13 @@ const PAYOUT_SELECT = `
     LEFT JOIN riders rd ON p.owner_type = 'RIDER' AND rd.id = p.owner_id`;
 
 interface Earning {
-  orderId: string;
+  orderId: string | null;
   ownerId: string;
   amountPaise: number;
   deliveredAt: Date;
+  tipId?: string;
+  incentiveId?: string;
+  claimId?: string;
 }
 
 export class PayoutRepository {
@@ -147,18 +150,76 @@ export class PayoutRepository {
           AND NOT EXISTS (SELECT 1 FROM payout_items pi WHERE pi.order_id = o.id AND pi.owner_type = 'RIDER')`,
       [cutoff.toISOString(), ownerId ?? null]
     );
-    return res.rows.map((r) => ({
+    const orderEarnings = res.rows.map((r) => ({
       orderId: r.id,
       ownerId: r.rider_id,
       amountPaise: SettlementCalculator.riderEarning(r.breakdown_json as QuoteBreakdown),
       deliveredAt: r.delivered_at,
     }));
+
+    // Post-delivery tips are separate payable items so an already-settled order can still tip
+    const tips = await pool.query(
+      `SELECT t.id AS tip_id, t.order_id, t.amount_paise, t.created_at, t.rider_id
+         FROM order_tips t
+        WHERE t.status = 'PAID' AND t.created_at < $1
+          AND ($2::uuid IS NULL OR t.rider_id = $2::uuid)
+          AND NOT EXISTS (
+            SELECT 1 FROM payout_items pi WHERE pi.tip_id = t.id AND pi.owner_type = 'RIDER'
+          )`,
+      [cutoff.toISOString(), ownerId ?? null]
+    );
+    const tipEarnings = tips.rows.map((r) => ({
+      orderId: r.order_id,
+      ownerId: r.rider_id,
+      amountPaise: r.amount_paise,
+      deliveredAt: r.created_at,
+      tipId: r.tip_id,
+    }));
+
+    // Delivery-count quest bonuses are rider payables with no order attached
+    const incentives = await pool.query(
+      `SELECT c.id, c.rider_id, c.reward_paise, c.claimed_at
+         FROM rider_incentive_claims c
+        WHERE c.claimed_at < $1
+          AND ($2::uuid IS NULL OR c.rider_id = $2::uuid)
+          AND NOT EXISTS (
+            SELECT 1 FROM payout_items pi WHERE pi.incentive_id = c.id AND pi.owner_type = 'RIDER'
+          )`,
+      [cutoff.toISOString(), ownerId ?? null]
+    );
+    const incentiveEarnings = incentives.rows.map((r) => ({
+      orderId: null,
+      ownerId: r.rider_id,
+      amountPaise: r.reward_paise,
+      deliveredAt: r.claimed_at,
+      incentiveId: r.id,
+    }));
+
+    // Approved insurance claims are rider payables settled with the next payout
+    const claims = await pool.query(
+      `SELECT c.id, c.rider_id, c.approved_paise, c.reviewed_at
+         FROM rider_insurance_claims c
+        WHERE c.status = 'APPROVED' AND c.reviewed_at < $1
+          AND ($2::uuid IS NULL OR c.rider_id = $2::uuid)
+          AND NOT EXISTS (
+            SELECT 1 FROM payout_items pi WHERE pi.claim_id = c.id AND pi.owner_type = 'RIDER'
+          )`,
+      [cutoff.toISOString(), ownerId ?? null]
+    );
+    const claimEarnings = claims.rows.map((r) => ({
+      orderId: null,
+      ownerId: r.rider_id,
+      amountPaise: r.approved_paise,
+      deliveredAt: r.reviewed_at,
+      claimId: r.id,
+    }));
+    return [...orderEarnings, ...tipEarnings, ...incentiveEarnings, ...claimEarnings];
   }
 
   /**
-   * Groups unsettled delivered orders (before `cutoff`) into one payout per partner.
-   * The unique (order, owner_type) index guarantees an order is never paid twice even
-   * if two settlement runs overlap; such a run simply skips that partner.
+   * Groups unsettled delivered orders, tips and quest bonuses (before `cutoff`) into one
+   * payout per partner. Partial unique indexes guarantee each earning is paid at most
+   * once even when settlement runs overlap.
    */
   static async runSettlement(cutoff: Date, options: { automaticTransfers: boolean }): Promise<string[]> {
     const created: string[] = [];
@@ -190,8 +251,9 @@ export class PayoutRepository {
             const id: string = res.rows[0].id;
             for (const item of items) {
               await client.query(
-                `INSERT INTO payout_items (payout_id, order_id, owner_type, amount_paise) VALUES ($1, $2, $3, $4)`,
-                [id, item.orderId, ownerType, item.amountPaise]
+                `INSERT INTO payout_items (payout_id, order_id, owner_type, amount_paise, tip_id, incentive_id, claim_id)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                [id, item.orderId, ownerType, item.amountPaise, item.tipId ?? null, item.incentiveId ?? null, item.claimId ?? null]
               );
             }
             if (status === "PENDING") {

@@ -38,6 +38,10 @@ interface SeedItem {
   dietaryTag: "VEG" | "NON_VEG" | "EGG" | "VEGAN";
   imageUrl: string;
   bestseller?: boolean;
+  allergens?: string[];
+  nutrition?: { calories?: number; proteinG?: number; carbsG?: number; fatG?: number };
+  spiceLevel?: number;
+  serves?: number;
   variants?: SeedOption[];
   modifiers?: Array<{ id: number; name: string; min: number; max: number; required: boolean; options: SeedOption[] }>;
 }
@@ -61,6 +65,8 @@ interface SeedRestaurant {
   pureVeg: boolean;
   heroImageUrl: string;
   offerTag: string | null;
+  amenities?: string[];
+  gallery?: string[];
   openingHours: Record<string, string[][]> | null;
   avgPrepMinutes: number;
   categories: SeedCategory[];
@@ -84,6 +90,12 @@ const RESTAURANTS: SeedRestaurant[] = [
     pureVeg: false,
     heroImageUrl: img("photo-1589302168068-964664d93dc0", 800),
     offerTag: "20% OFF UPTO ₹50",
+    amenities: ["Outdoor seating", "Card accepted", "Family friendly", "Parking"],
+    gallery: [
+      img("photo-1589302168068-964664d93dc0", 900),
+      img("photo-1599487488170-d11ec9c172f0", 900),
+      img("photo-1626777552726-4a6b54c97e46", 900),
+    ],
     // Open around the clock so automated tests are time-of-day independent
     openingHours: null,
     avgPrepMinutes: 18,
@@ -100,6 +112,10 @@ const RESTAURANTS: SeedRestaurant[] = [
             dietaryTag: "VEG",
             imageUrl: img("photo-1599487488170-d11ec9c172f0"),
             bestseller: true,
+            allergens: ["Milk"],
+            nutrition: { calories: 320, proteinG: 18, carbsG: 14, fatG: 21 },
+            spiceLevel: 2,
+            serves: 1,
           },
           {
             id: 2,
@@ -108,6 +124,10 @@ const RESTAURANTS: SeedRestaurant[] = [
             pricePaise: 34000,
             dietaryTag: "NON_VEG",
             imageUrl: img("photo-1626777552726-4a6b54c97e46"),
+            allergens: ["Milk"],
+            nutrition: { calories: 380, proteinG: 32, carbsG: 8, fatG: 24 },
+            spiceLevel: 1,
+            serves: 1,
             modifiers: [
               {
                 id: 1,
@@ -399,9 +419,10 @@ async function seedRestaurant(client: PoolClient, r: SeedRestaurant): Promise<vo
        id, merchant_id, city_id, service_zone_id, name, slug, cuisines, rating, rating_count,
        avg_price_for_one_paise, delivery_time_min_minutes, delivery_time_max_minutes,
        latitude, longitude, address_text, phone, is_accepting_orders, is_open, pure_veg, hero_image_url, offer_tag,
-       opening_hours, avg_prep_minutes, max_delivery_radius_meters
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 25, 35, $11, $12, $13, $14, true, true, $15, $16, $17, $18, $19, 7000)
-     ON CONFLICT (id) DO UPDATE SET opening_hours = EXCLUDED.opening_hours, avg_prep_minutes = EXCLUDED.avg_prep_minutes`,
+       opening_hours, avg_prep_minutes, max_delivery_radius_meters, amenities, gallery_json
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 25, 35, $11, $12, $13, $14, true, true, $15, $16, $17, $18, $19, 7000, $20, $21)
+     ON CONFLICT (id) DO UPDATE SET opening_hours = EXCLUDED.opening_hours, avg_prep_minutes = EXCLUDED.avg_prep_minutes,
+       amenities = EXCLUDED.amenities, gallery_json = EXCLUDED.gallery_json`,
     [
       r.id,
       SEED_IDS.merchantId,
@@ -422,6 +443,8 @@ async function seedRestaurant(client: PoolClient, r: SeedRestaurant): Promise<vo
       r.offerTag,
       r.openingHours ? JSON.stringify(r.openingHours) : null,
       r.avgPrepMinutes,
+      r.amenities ?? [],
+      JSON.stringify(r.gallery ?? []),
     ]
   );
 
@@ -437,10 +460,28 @@ async function seedRestaurant(client: PoolClient, r: SeedRestaurant): Promise<vo
       const itemId = fixedId("9", item.id);
       await client.query(
         `INSERT INTO menu_items (id, restaurant_id, category_id, name, description, price_paise, dietary_tag,
-                                 is_available, image_url, is_bestseller, display_order)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10)
-         ON CONFLICT (id) DO UPDATE SET is_bestseller = EXCLUDED.is_bestseller, display_order = EXCLUDED.display_order`,
-        [itemId, r.id, categoryId, item.name, item.description, item.pricePaise, item.dietaryTag, item.imageUrl, item.bestseller ?? false, itemIndex]
+                                 is_available, image_url, is_bestseller, display_order,
+                                 allergens, nutrition_json, spice_level, serves)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10, $11, $12, $13, $14)
+         ON CONFLICT (id) DO UPDATE SET is_bestseller = EXCLUDED.is_bestseller, display_order = EXCLUDED.display_order,
+           allergens = EXCLUDED.allergens, nutrition_json = EXCLUDED.nutrition_json,
+           spice_level = EXCLUDED.spice_level, serves = EXCLUDED.serves`,
+        [
+          itemId,
+          r.id,
+          categoryId,
+          item.name,
+          item.description,
+          item.pricePaise,
+          item.dietaryTag,
+          item.imageUrl,
+          item.bestseller ?? false,
+          itemIndex,
+          item.allergens ?? [],
+          item.nutrition ? JSON.stringify(item.nutrition) : null,
+          item.spiceLevel ?? 0,
+          item.serves ?? null,
+        ]
       );
 
       for (const [vIndex, variant] of (item.variants ?? []).entries()) {
@@ -547,12 +588,54 @@ export async function runSeeds() {
       );
     }
 
-    // 6. Rider Fixture
+    // 6. Rider Fixture (demo partner is already KYC-verified)
     await client.query(
-      `INSERT INTO riders (id, user_id, name, phone, vehicle_type, is_approved, is_online, current_latitude, current_longitude, last_ping_at)
-       VALUES ($1, $2, 'Amit Kumar', '+919876543212', 'MOTORCYCLE', true, true, 28.6320, 77.2180, NOW())
-       ON CONFLICT (id) DO NOTHING`,
+      `INSERT INTO riders (id, user_id, name, phone, vehicle_type, is_approved, is_online, current_latitude, current_longitude,
+                           last_ping_at, verification_status, rating, delivery_count, joined_at)
+       VALUES ($1, $2, 'Amit Kumar', '+919876543212', 'MOTORCYCLE', true, true, 28.6320, 77.2180, NOW(),
+               'VERIFIED', 4.9, 128, NOW() - interval '180 days')
+       ON CONFLICT (id) DO UPDATE SET verification_status = 'VERIFIED', is_approved = true`,
       [SEED_IDS.riderId, SEED_IDS.riderUserId]
+    );
+    await client.query(
+      `INSERT INTO rider_verifications (rider_id, status, aadhaar_last4, pan_verified, dl_verified,
+                                        background_check_status, training_completed_at, submitted_at, verified_at)
+       VALUES ($1, 'VERIFIED', '4821', true, true, 'CLEAR', NOW() - interval '175 days', NOW() - interval '180 days', NOW() - interval '178 days')
+       ON CONFLICT (rider_id) DO UPDATE SET status = 'VERIFIED'`,
+      [SEED_IDS.riderId]
+    );
+    for (const docType of ["PROFILE_PHOTO", "AADHAAR", "DRIVING_LICENSE", "VEHICLE_RC"]) {
+      await client.query(
+        `INSERT INTO rider_documents (rider_id, doc_type, file_url, status, reviewed_at)
+         VALUES ($1, $2, $3, 'VERIFIED', NOW() - interval '178 days')
+         ON CONFLICT (rider_id, doc_type) DO NOTHING`,
+        [SEED_IDS.riderId, docType, `https://images.bitebox.example/kyc/${docType.toLowerCase()}.jpg`]
+      );
+    }
+
+    // Demo quests and shift slots so the rider rewards loop is visible
+    await client.query(
+      `INSERT INTO rider_incentives (id, code, title, description, target_deliveries, reward_paise, starts_at, ends_at, is_active)
+       VALUES
+         ($1, 'LUNCH-3', 'Lunch rush sprint', 'Complete 3 deliveries between 11am and 4pm today.', 3, 7500,
+          date_trunc('day', NOW()) + interval '11 hours', date_trunc('day', NOW()) + interval '16 hours', true),
+         ($2, 'WEEK-10', 'Weekly streak', 'Complete 10 deliveries in the next 7 days.', 10, 20000,
+          NOW() - interval '1 hour', NOW() + interval '7 days', true)
+       ON CONFLICT (code) DO UPDATE SET
+         title = EXCLUDED.title, description = EXCLUDED.description, target_deliveries = EXCLUDED.target_deliveries,
+         reward_paise = EXCLUDED.reward_paise, starts_at = EXCLUDED.starts_at, ends_at = EXCLUDED.ends_at, is_active = true`,
+      [fixedId("f", 1), fixedId("f", 2)]
+    );
+    await client.query(
+      `INSERT INTO rider_shifts (id, label, starts_at, ends_at, capacity, is_active)
+       VALUES
+         ($1, 'Lunch rush · Connaught Place', date_trunc('day', NOW()) + interval '1 day 11 hours', date_trunc('day', NOW()) + interval '1 day 15 hours', 6, true),
+         ($2, 'Dinner peak · Connaught Place', date_trunc('day', NOW()) + interval '1 day 18 hours', date_trunc('day', NOW()) + interval '1 day 23 hours', 8, true),
+         ($3, 'Lunch rush · Connaught Place', date_trunc('day', NOW()) + interval '2 days 11 hours', date_trunc('day', NOW()) + interval '2 days 15 hours', 6, true)
+       ON CONFLICT (id) DO UPDATE SET
+         label = EXCLUDED.label, starts_at = EXCLUDED.starts_at, ends_at = EXCLUDED.ends_at,
+         capacity = EXCLUDED.capacity, is_active = true`,
+      [fixedId("f", 3), fixedId("f", 4), fixedId("f", 5)]
     );
 
     // 7. Coupons with realistic limits
@@ -566,6 +649,195 @@ export async function runSeeds() {
          ($4, 'FREEDEL', 'FREE_DELIVERY', 0, NULL, 19900, true, 'Free delivery on orders above ₹199', 5, false)
        ON CONFLICT (id) DO UPDATE SET code = EXCLUDED.code, description = EXCLUDED.description`,
       [fixedId("d", 1), fixedId("d", 2), fixedId("d", 3), fixedId("d", 4)]
+    );
+
+    await client.query(
+      `UPDATE restaurants SET hygiene_rating = 4 WHERE id = ANY($1::uuid[]) AND hygiene_rating IS NULL`,
+      [[SEED_IDS.restaurant1Id, SEED_IDS.restaurant2Id]]
+    );
+
+    // 8b. Campus cluster with a drop point and a campus meal plan
+    await client.query(
+      `INSERT INTO clusters (id, city_id, name, polygon_geojson)
+       VALUES ($1, $2, 'IIT Delhi campus', $3::jsonb)
+       ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, polygon_geojson = EXCLUDED.polygon_geojson, is_active = true`,
+      [
+        fixedId("b", 9201),
+        SEED_IDS.cityId,
+        JSON.stringify([
+          { latitude: 28.54, longitude: 77.18 },
+          { latitude: 28.56, longitude: 77.18 },
+          { latitude: 28.56, longitude: 77.21 },
+          { latitude: 28.54, longitude: 77.21 },
+        ]),
+      ]
+    );
+    await client.query(
+      `INSERT INTO drop_points (id, cluster_id, name, latitude, longitude)
+       VALUES ($1, $2, 'Hostel Gate 1', 28.545, 77.192)
+       ON CONFLICT (id) DO UPDATE SET cluster_id = EXCLUDED.cluster_id, name = EXCLUDED.name,
+         latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude`,
+      [fixedId("e", 9201), fixedId("b", 9201)]
+    );
+    await client.query(
+      `INSERT INTO meal_plans
+         (id, cluster_id, kitchen_restaurant_id, name, sku_type, total_meals, price_paise, validity_days,
+          kitchen_contract_payout_paise, late_skip_fee_paise, auto_schedule_days, slot_window, is_active)
+       VALUES ($1, $2, $3, 'Campus 5-lunch pass', 'STANDARD_LUNCH', 5, 39900, 21, 28000, 1500, '{1,2,3,4,5}', '12:30-13:30', true)
+       ON CONFLICT (id) DO UPDATE SET cluster_id = EXCLUDED.cluster_id, name = EXCLUDED.name,
+         total_meals = EXCLUDED.total_meals, price_paise = EXCLUDED.price_paise, validity_days = EXCLUDED.validity_days,
+         kitchen_contract_payout_paise = EXCLUDED.kitchen_contract_payout_paise, late_skip_fee_paise = EXCLUDED.late_skip_fee_paise,
+         auto_schedule_days = EXCLUDED.auto_schedule_days, slot_window = EXCLUDED.slot_window, is_active = true`,
+      [fixedId("a", 9201), fixedId("b", 9201), SEED_IDS.restaurant1Id]
+    );
+
+    // 8b. Demo add-on so active orders offer a one-tap extra
+    await client.query(
+      `INSERT INTO addon_skus (id, kitchen_id, name, price_paise, cogs_paise, stock_count, is_active)
+       VALUES ($1, $2, 'Masala Chaas', 2000, 1000, 20, true)
+       ON CONFLICT (id) DO UPDATE SET price_paise = EXCLUDED.price_paise, cogs_paise = EXCLUDED.cogs_paise,
+         stock_count = 20, is_active = true, updated_at = NOW()`,
+      [fixedId("e", 9102), SEED_IDS.restaurant1Id]
+    );
+
+    // 8b. Demo corporate lunch account so members can see their allowance
+    await client.query(
+      `INSERT INTO clusters (id, city_id, name, polygon_geojson)
+       VALUES ($1, $2, 'Connaught Place corporate cluster', $3::jsonb)
+       ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, polygon_geojson = EXCLUDED.polygon_geojson, is_active = true`,
+      [
+        fixedId("b", 9101),
+        SEED_IDS.cityId,
+        JSON.stringify([
+          { latitude: 28.62, longitude: 77.2 },
+          { latitude: 28.64, longitude: 77.2 },
+          { latitude: 28.64, longitude: 77.23 },
+          { latitude: 28.62, longitude: 77.23 },
+        ]),
+      ]
+    );
+    await client.query(
+      `INSERT INTO drop_points (id, cluster_id, name, latitude, longitude)
+       VALUES ($1, $2, 'Northstar Labs lobby', 28.6315, 77.2167)
+       ON CONFLICT (id) DO UPDATE SET cluster_id = EXCLUDED.cluster_id, name = EXCLUDED.name,
+         latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude`,
+      [fixedId("e", 9101), fixedId("b", 9101)]
+    );
+    await client.query(
+      `INSERT INTO corporate_accounts
+         (id, company_name, gstin, billing_address, drop_point_id,
+          daily_allowance_per_employee_paise, subsidy_percentage_bp, corporate_management_fee_bp, credit_limit_paise)
+       VALUES ($1, 'Northstar Labs', '07AAACN1234F1Z8', '12 Barakhamba Road, New Delhi', $2, 20000, 10000, 500, 500000)
+       ON CONFLICT (id) DO UPDATE SET company_name = EXCLUDED.company_name,
+         drop_point_id = EXCLUDED.drop_point_id,
+         daily_allowance_per_employee_paise = EXCLUDED.daily_allowance_per_employee_paise,
+         subsidy_percentage_bp = EXCLUDED.subsidy_percentage_bp,
+         corporate_management_fee_bp = EXCLUDED.corporate_management_fee_bp,
+         credit_limit_paise = EXCLUDED.credit_limit_paise, is_active = true`,
+      [fixedId("a", 9101), fixedId("e", 9101)]
+    );
+    await client.query(
+      `INSERT INTO corporate_employees (corporate_account_id, user_id, cost_center_code, email_domain)
+       VALUES ($1, $2, 'ENG-01', 'northstar.test')
+       ON CONFLICT (corporate_account_id, user_id) DO UPDATE SET cost_center_code = EXCLUDED.cost_center_code, is_active = true`,
+      [fixedId("a", 9101), SEED_IDS.customerUserId]
+    );
+
+    // 8b. Meal plans so the pass purchase flow is usable out of the box
+    await client.query(
+      `INSERT INTO meal_plans
+         (id, kitchen_restaurant_id, name, sku_type, total_meals, price_paise, validity_days,
+          kitchen_contract_payout_paise, late_skip_fee_paise, auto_schedule_days, slot_window, is_active)
+       VALUES
+         ($1, $3, '3-meal trial lunch pass', 'STANDARD_LUNCH', 3, 29900, 14, 21000, 2000, '{1,2,3,4,5}', '12:30-13:30', true),
+         ($2, $3, '10-meal weekday lunch pass', 'STANDARD_LUNCH', 10, 89900, 30, 65000, 2500, '{1,2,3,4,5}', '12:30-13:30', true)
+       ON CONFLICT (id) DO UPDATE SET
+         name = EXCLUDED.name, total_meals = EXCLUDED.total_meals, price_paise = EXCLUDED.price_paise,
+         validity_days = EXCLUDED.validity_days, kitchen_contract_payout_paise = EXCLUDED.kitchen_contract_payout_paise,
+         late_skip_fee_paise = EXCLUDED.late_skip_fee_paise, auto_schedule_days = EXCLUDED.auto_schedule_days,
+         slot_window = EXCLUDED.slot_window, is_active = true`,
+      [fixedId("a", 9001), fixedId("a", 9002), SEED_IDS.restaurant1Id]
+    );
+
+    // 8. Demo rescue bag so the surplus flow is visible without merchant setup
+    await client.query(
+      `INSERT INTO surplus_listings
+         (id, restaurant_id, title, original_value_paise, sale_price_paise, platform_flat_fee_paise,
+          quantity_available, pickup_window_start, pickup_window_end, status)
+       VALUES ($1, $2, 'Surprise Tandoori Rescue Bag', 45000, 14900, 1900, 8,
+               NOW() - interval '5 minutes', NOW() + interval '8 hours', 'ACTIVE')
+       ON CONFLICT (id) DO UPDATE SET
+         quantity_available = 8, pickup_window_start = EXCLUDED.pickup_window_start,
+         pickup_window_end = EXCLUDED.pickup_window_end, status = 'ACTIVE', updated_at = NOW()`,
+      [fixedId("e", 1), SEED_IDS.restaurant1Id]
+    );
+
+    // 8c. Curated collections for discovery
+    await client.query(
+      `INSERT INTO collections (id, slug, title, subtitle, description, image_url, display_order, is_active)
+       VALUES
+         ($1, 'biryani-trail', 'The biryani trail', 'Dum-cooked, charcoal-finished, worth the drive',
+          'Three kitchens our reviewers keep returning to for long-grain basmati, saffron and slow-cooked meat. Start with the Lucknowi dum biryani and work your way across the city.',
+          $4, 1, true),
+         ($2, 'late-night-legends', 'Late-night legends', 'Open when the craving hits at 1am',
+          'The kitchens that still pick up after midnight — rolls, burgers and biryani for the after-hours crowd.',
+          $5, 2, true),
+         ($3, 'connaught-classics', 'Connaught Place classics', 'The old guards of the Outer Circle',
+          'A walkable route through the restaurants that made Connaught Place a food destination: tandoori, chaat and everything in between.',
+          $6, 3, true)
+       ON CONFLICT (id) DO UPDATE SET
+         title = EXCLUDED.title, subtitle = EXCLUDED.subtitle, description = EXCLUDED.description,
+         image_url = EXCLUDED.image_url, display_order = EXCLUDED.display_order, is_active = true`,
+      [
+        fixedId("f", 1),
+        fixedId("f", 2),
+        fixedId("f", 3),
+        img("photo-1563379091339-03246963d51a", 1200),
+        img("photo-1568901346375-23c9450c58cd", 1200),
+        img("photo-1552566626-52f8b828add9", 1200),
+      ]
+    );
+    for (const [collectionId, restaurantIds] of [
+      [fixedId("f", 1), [SEED_IDS.restaurant1Id, SEED_IDS.restaurant3Id, SEED_IDS.restaurant2Id]],
+      [fixedId("f", 2), [SEED_IDS.restaurant3Id, SEED_IDS.restaurant1Id]],
+      [fixedId("f", 3), [SEED_IDS.restaurant1Id, SEED_IDS.restaurant2Id, SEED_IDS.restaurant3Id]],
+    ] as Array<[string, string[]]>) {
+      for (let index = 0; index < restaurantIds.length; index += 1) {
+        await client.query(
+          `INSERT INTO collection_restaurants (collection_id, restaurant_id, rank)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (collection_id, restaurant_id) DO UPDATE SET rank = EXCLUDED.rank`,
+          [collectionId, restaurantIds[index]!, index]
+        );
+      }
+    }
+
+    // 9. Upcoming ticketed dining events (Zomato Live-style)
+    await client.query(
+      `INSERT INTO dining_events
+         (id, restaurant_id, title, description, image_url, category, starts_at, ends_at, price_paise, capacity, booked_count, is_active)
+       VALUES
+         ($1, $4, 'Chef''s Table: 24-hour Dal Makhani', 'A six-course tasting at the charcoal tandoor with the chef, including the signature dal finished tableside.',
+          $7, 'DINING', NOW() + interval '3 days 19 hours', NOW() + interval '3 days 22 hours', 149900, 12, 3, true),
+         ($2, $5, 'Biryani Masterclass & Lunch', 'Hands-on dum biryani workshop with spice blending, followed by a shared lunch.',
+          $8, 'WORKSHOP', NOW() + interval '5 days 11 hours', NOW() + interval '5 days 14 hours', 89900, 16, 5, true),
+         ($3, $6, 'Comedy Night on the Terrace', 'Stand-up sets under the stars with a burger-and-shake combo included.',
+          $9, 'COMEDY', NOW() + interval '7 days 20 hours', NOW() + interval '7 days 23 hours', 49900, 30, 11, true)
+       ON CONFLICT (id) DO UPDATE SET
+         title = EXCLUDED.title, description = EXCLUDED.description, image_url = EXCLUDED.image_url,
+         category = EXCLUDED.category, starts_at = EXCLUDED.starts_at, ends_at = EXCLUDED.ends_at,
+         price_paise = EXCLUDED.price_paise, capacity = EXCLUDED.capacity, is_active = true`,
+      [
+        fixedId("d", 1),
+        fixedId("d", 2),
+        fixedId("d", 3),
+        SEED_IDS.restaurant1Id,
+        SEED_IDS.restaurant2Id,
+        SEED_IDS.restaurant3Id,
+        img("photo-1414235077428-338989a2e8c0", 900),
+        img("photo-1556910103-1c02745aae4d", 900),
+        img("photo-1514320291840-2e0a9bf2a9ae", 900),
+      ]
     );
 
     await client.query("COMMIT");

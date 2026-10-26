@@ -1,4 +1,5 @@
 import { getClientEnv, getRazorpayKeyId, getServerEnv, isDemoAuthEnabled, isMockSecret } from "@startup/config";
+import { PlatformConfigRepository } from "@startup/database";
 import { apiSuccess } from "@/server/api-response";
 
 export const dynamic = "force-dynamic";
@@ -7,6 +8,7 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   const clientEnv = getClientEnv();
   const serverEnv = getServerEnv();
+  const dynamicConfig = await PlatformConfigRepository.getAll().catch(() => ({}));
   return apiSuccess({
     razorpayKeyId: getRazorpayKeyId(),
     mapboxToken: isMockSecret(clientEnv.NEXT_PUBLIC_MAPBOX_TOKEN) ? null : clientEnv.NEXT_PUBLIC_MAPBOX_TOKEN,
@@ -21,6 +23,7 @@ export async function GET() {
       pushNotifications: Boolean(serverEnv.VAPID_PUBLIC_KEY && serverEnv.VAPID_PRIVATE_KEY),
       tipping: true,
     },
+    platformConfig: dynamicConfig,
     supportedCity: "New Delhi",
     currency: "INR",
     minAppVersion: "1.0.0",

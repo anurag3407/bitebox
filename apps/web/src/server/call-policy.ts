@@ -19,8 +19,9 @@ export async function resolveCallParties(
   target: CallTarget
 ): Promise<{ fromPhone: string | null; toPhone: string | null }> {
   const res = await getDbPool().query(
-    `SELECT o.fulfillment_state, o.delivered_at, o.cancelled_at,
-            COALESCE(o.delivery_address_snapshot->>'contactPhone', cu.phone) AS customer_phone,
+    `SELECT o.fulfillment_state, o.delivered_at, o.cancelled_at, o.recipient_phone,
+            cu.phone AS account_phone,
+            COALESCE(o.recipient_phone, o.delivery_address_snapshot->>'contactPhone', cu.phone) AS delivery_phone,
             r.phone AS restaurant_phone,
             rd.phone AS rider_phone, rd.user_id AS rider_user_id, da.status AS trip_status
        FROM orders o
@@ -44,7 +45,8 @@ export async function resolveCallParties(
   };
   const phones: Record<CallTarget, string | null> = {
     RIDER: o.rider_phone,
-    CUSTOMER: o.customer_phone,
+    // Riders and restaurants reach the recipient directly; the customer still owns the order
+    CUSTOMER: o.delivery_phone,
     RESTAURANT: o.restaurant_phone,
   };
 
@@ -54,7 +56,7 @@ export async function resolveCallParties(
       if (target === "CUSTOMER") deny("Choose who to call");
       if (target === "RIDER" && !tripActive) deny("You can call the delivery partner while your order is on its way.");
       if (target === "RESTAURANT" && !recentlyFinished) deny("Please use Help for older orders.");
-      fromPhone = o.customer_phone ?? ctx.user.phone;
+      fromPhone = o.account_phone ?? ctx.user.phone;
       break;
     case "RIDER":
       if (o.rider_user_id !== ctx.user.id || !tripActive) deny("Calling is available during your active trip.");

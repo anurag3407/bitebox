@@ -10,6 +10,7 @@ import {
 } from "@startup/core";
 import { getDbPool, withTransaction } from "../client.js";
 import { LedgerRepository } from "./ledger.repository.js";
+import { WalletRepository } from "./wallet.repository.js";
 
 export class SurplusRepository {
   static async createListing(input: {
@@ -56,7 +57,9 @@ export class SurplusRepository {
 
   static async listActive(clusterId?: string) {
     const res = await getDbPool().query(
-      `SELECT sl.*, r.name AS restaurant_name, r.slug AS restaurant_slug
+      `SELECT sl.*, r.name AS restaurant_name, r.slug AS restaurant_slug,
+              r.hero_image_url AS restaurant_image_url, r.cuisines AS restaurant_cuisines,
+              r.rating AS restaurant_rating, r.address_text AS restaurant_address
          FROM surplus_listings sl JOIN restaurants r ON r.id = sl.restaurant_id
         WHERE sl.status = 'ACTIVE' AND sl.quantity_available > 0
           AND sl.pickup_window_end > NOW()
@@ -65,6 +68,34 @@ export class SurplusRepository {
       [clusterId ?? null]
     );
     return res.rows;
+  }
+
+  static async listForRestaurant(restaurantId: string) {
+    const res = await getDbPool().query(
+      `SELECT sl.*,
+              COALESCE((SELECT COUNT(*) FROM orders o WHERE o.surplus_listing_id = sl.id), 0)::int AS sold_count
+         FROM surplus_listings sl
+        WHERE sl.restaurant_id = $1
+        ORDER BY sl.created_at DESC LIMIT 50`,
+      [restaurantId]
+    );
+    return res.rows;
+  }
+
+  static async setListingStatus(input: {
+    listingId: string;
+    restaurantId: string;
+    status: "ACTIVE" | "CANCELLED";
+  }) {
+    const res = await getDbPool().query(
+      `UPDATE surplus_listings
+          SET status = $3, updated_at = NOW()
+        WHERE id = $1 AND restaurant_id = $2 AND status IN ('ACTIVE', 'CANCELLED', 'SOLD_OUT')
+        RETURNING *`,
+      [input.listingId, input.restaurantId, input.status]
+    );
+    if (!res.rows[0]) throw new DomainError("NOT_FOUND", "Rescue bag not found for this outlet");
+    return res.rows[0];
   }
 
   /**
@@ -118,7 +149,10 @@ export class SurplusRepository {
     });
   }
 
-  /** Creates a paid rescue-bag order and atomically consumes one unit. */
+  /**
+   * Buys a rescue bag with BiteBox Credits. The bag is immediately ready for
+   * self-pickup at the restaurant; the customer shows the pickup code at the counter.
+   */
   static async purchaseListing(input: {
     listingId: string;
     userId: string;
@@ -127,7 +161,13 @@ export class SurplusRepository {
   }) {
     const now = input.now ?? new Date();
     return withTransaction(async (client) => {
-      const res = await client.query(`SELECT * FROM surplus_listings WHERE id = $1 FOR UPDATE`, [input.listingId]);
+      const res = await client.query(
+        `SELECT sl.*, r.name AS restaurant_name, r.address_text AS restaurant_address,
+                r.latitude AS restaurant_latitude, r.longitude AS restaurant_longitude, r.phone AS restaurant_phone
+           FROM surplus_listings sl JOIN restaurants r ON r.id = sl.restaurant_id
+          WHERE sl.id = $1 FOR UPDATE OF sl`,
+        [input.listingId]
+      );
       const listing = res.rows[0];
       if (!listing) throw new DomainError("NOT_FOUND", "Surplus bag not found");
       if (listing.status !== "ACTIVE" || listing.quantity_available <= 0) {
@@ -137,22 +177,16 @@ export class SurplusRepository {
         throw new DomainError("STATE_CONFLICT", "This rescue bag is outside its pickup window");
       }
 
-      const address = await client.query(
-        input.addressId
-          ? `SELECT id FROM customer_addresses WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`
-          : `SELECT id FROM customer_addresses WHERE user_id = $1 AND deleted_at IS NULL ORDER BY is_default DESC, created_at ASC LIMIT 1`,
-        input.addressId ? [input.addressId, input.userId] : [input.userId]
-      );
-      if (!address.rows[0]) throw new DomainError("VALIDATION_ERROR", "Add a delivery address before reserving a bag");
-
-      await client.query(
+      const stock = await client.query(
         `UPDATE surplus_listings
             SET quantity_available = quantity_available - 1,
                 status = CASE WHEN quantity_available - 1 <= 0 THEN 'SOLD_OUT' ELSE status END,
                 updated_at = NOW()
-          WHERE id = $1`,
+          WHERE id = $1 AND quantity_available >= 1
+          RETURNING *`,
         [listing.id]
       );
+      if (!stock.rows[0]) throw new DomainError("OUT_OF_STOCK", "This rescue bag just sold out");
 
       const orderNumber = generateOrderNumber(now);
       const merchantProceeds = listing.sale_price_paise - listing.platform_flat_fee_paise;
@@ -180,36 +214,56 @@ export class SurplusRepository {
           lineTotalPaise: listing.sale_price_paise,
         },
       ];
+      const snapshot = {
+        label: "Rescue bag pickup",
+        building: listing.restaurant_name,
+        street: listing.restaurant_address,
+        latitude: listing.restaurant_latitude,
+        longitude: listing.restaurant_longitude,
+        contactPhone: listing.restaurant_phone ?? undefined,
+      };
       const orderRes = await client.query(
         `INSERT INTO orders
-           (order_number, customer_id, restaurant_id, delivery_address_id, items_json, breakdown_json,
+           (order_number, customer_id, restaurant_id, items_json, breakdown_json,
             fulfillment_state, payment_status, payable_paise, delivery_otp, pickup_otp,
             promised_delivery_at, acquisition_channel, commission_bp_applied, commission_paise,
             merchant_order_fee_paise, merchant_net_payout_paise, order_type,
-            surplus_listing_id, surplus_quantity, slot_cutoff_at)
-         VALUES ($1, $2, $3, $4, $5, $6, 'ACCEPTED', 'CAPTURED', $7, $8, $9, $10,
-                 'SURPLUS_BAG', 0, 0, 0, $11, 'SURPLUS', $12, 1, $10)
+            surplus_listing_id, surplus_quantity, slot_cutoff_at, order_mode,
+            delivery_address_snapshot, payment_method)
+         VALUES ($1, $2, $3, $4, $5, 'READY_FOR_PICKUP', 'CAPTURED', $6, $7, $8, $9,
+                 'SURPLUS_BAG', 0, 0, 0, $10, 'SURPLUS', $11, 1, $9, 'PICKUP', $12, 'WALLET')
          RETURNING *`,
         [
           orderNumber,
           input.userId,
           listing.restaurant_id,
-          address.rows[0].id,
           JSON.stringify(items),
           JSON.stringify(breakdown),
           listing.sale_price_paise,
           generateVerificationOtp(4),
           generateVerificationOtp(4),
-          listing.pickup_window_start,
+          new Date(listing.pickup_window_start).toISOString(),
           merchantProceeds,
           listing.id,
+          JSON.stringify(snapshot),
         ]
       );
       const order = orderRes.rows[0];
+      await client.query(
+        `INSERT INTO order_events (id, order_id, sequence, source_state, target_state, actor_type, reason)
+         VALUES (gen_random_uuid(), $1, 1, 'NONE', 'READY_FOR_PICKUP', 'SYSTEM', 'Rescue bag purchased')`,
+        [order.id]
+      );
+      await WalletRepository.debitForOrderWithClient(client, {
+        userId: input.userId,
+        orderId: order.id,
+        amountPaise: listing.sale_price_paise,
+        description: `Rescue bag: ${listing.title}`,
+      });
       const paymentRes = await client.query(
         `INSERT INTO payments (id, order_id, provider_payment_id, status, amount_paise, currency)
          VALUES (gen_random_uuid(), $1, $2, 'CAPTURED', $3, 'INR') RETURNING id`,
-        [order.id, `SURPLUS:${order.id}`, listing.sale_price_paise]
+        [order.id, `wallet:${order.id}`, listing.sale_price_paise]
       );
       await LedgerRepository.postTransactionWithClient(client, {
         orderId: order.id,

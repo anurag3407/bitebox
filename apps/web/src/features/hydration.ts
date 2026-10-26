@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useCartStore } from "@/features/cart/cart-store";
 import { useLocationStore } from "@/features/location/location-store";
+import { useLanguageStore } from "@/features/i18n/language-store";
 
 interface PersistedStore {
   persist: {
@@ -30,6 +31,7 @@ export function usePersistHydrated(store: PersistedStore): boolean {
 export function rehydrateClientStores(): void {
   void useCartStore.persist.rehydrate();
   void useLocationStore.persist.rehydrate();
+  void useLanguageStore.persist.rehydrate();
 }
 
 export const useCartHydrated = () => usePersistHydrated(useCartStore);

@@ -10,7 +10,7 @@ export class LedgerRepository {
       orderId?: string;
       paymentId?: string;
       refundId?: string;
-      effectType: "CAPTURE" | "REFUND" | "PAYOUT" | "MEAL_PASS" | "CAPTAIN" | "ADJUSTMENT";
+      effectType: "CAPTURE" | "REFUND" | "PAYOUT" | "MEAL_PASS" | "CAPTAIN" | "ADJUSTMENT" | "INCENTIVE";
       entries: LedgerEntry[];
     }
   ): Promise<string> {

@@ -1,7 +1,9 @@
 import { DomainError, LedgerEngine, decideScheduledMealSkip, priceSurplusBag } from "@startup/core";
+import type { PoolClient } from "pg";
 import { getDbPool, withTransaction } from "../client.js";
 import { LedgerRepository } from "./ledger.repository.js";
 import { OutboxRepository } from "./outbox.repository.js";
+import { WalletRepository } from "./wallet.repository.js";
 
 const IST_OFFSET_MINUTES = 330;
 
@@ -73,7 +75,8 @@ export class MealPassRepository {
     const res = await getDbPool().query(
       `SELECT pl.*, r.name AS kitchen_name, r.slug AS kitchen_slug
          FROM meal_plans pl JOIN restaurants r ON r.id = pl.kitchen_restaurant_id
-        WHERE pl.is_active AND ($1::uuid IS NULL OR pl.cluster_id = $1::uuid)
+        WHERE pl.is_active
+          AND (($1::uuid IS NULL AND pl.cluster_id IS NULL) OR pl.cluster_id = $1::uuid)
         ORDER BY pl.created_at DESC`,
       [clusterId ?? null]
     );
@@ -104,17 +107,60 @@ export class MealPassRepository {
         [input.userId, plan.id, plan.total_meals, plan.auto_schedule_days, input.dropPointId ?? null, expiresAt.toISOString()]
       );
       const pass = passRes.rows[0];
+      await WalletRepository.debitForPurchaseWithClient(client, {
+        userId: input.userId,
+        amountPaise: plan.price_paise,
+        kind: "MEAL_PASS_PAYMENT",
+        referenceType: "MEAL_PASS",
+        referenceId: pass.id,
+        description: `${plan.name} meal pass`,
+      });
       await LedgerRepository.postTransactionWithClient(client, {
         effectType: "MEAL_PASS",
         entries: LedgerEngine.buildMealPassPurchaseEntries(plan.price_paise, pass.id),
       });
-      return { pass, plan };
+      const scheduledDeliveries = await MealPassRepository.scheduleUpcomingDeliveriesWithClient(client, {
+        pass,
+        plan,
+      });
+      return { pass, plan, scheduledDeliveries };
     });
+  }
+
+  /** Creates the first run of auto-scheduled meals so a new pass is usable immediately. */
+  private static async scheduleUpcomingDeliveriesWithClient(
+    client: PoolClient,
+    input: { pass: any; plan: any }
+  ): Promise<number> {
+    const days: string[] = [];
+    const midnight = new Date();
+    midnight.setUTCHours(0, 0, 0, 0);
+    const expiry = new Date(input.pass.expires_at).getTime();
+    const weekdays: number[] = input.plan.auto_schedule_days;
+    for (let offset = 1; offset <= 21 && days.length < 5; offset += 1) {
+      const day = new Date(midnight.getTime() + offset * 24 * 60 * 60 * 1000);
+      if (day.getTime() >= expiry) break;
+      if (!weekdays.includes(isoWeekday(day))) continue;
+      days.push(day.toISOString().slice(0, 10));
+    }
+    let created = 0;
+    for (const date of days) {
+      const res = await client.query(
+        `INSERT INTO scheduled_meal_deliveries
+           (pass_id, user_id, kitchen_id, delivery_date, slot_window, status, source)
+         VALUES ($1, $2, $3, $4::date, $5, 'SCHEDULED', 'AUTO')
+         ON CONFLICT (pass_id, delivery_date, slot_window) DO NOTHING
+         RETURNING id`,
+        [input.pass.id, input.pass.user_id, input.plan.kitchen_restaurant_id, date, input.plan.slot_window]
+      );
+      if (res.rows[0]) created += 1;
+    }
+    return created;
   }
 
   static async listPasses(userId: string) {
     const res = await getDbPool().query(
-      `SELECT p.*, pl.name AS plan_name, pl.sku_type, pl.slot_window,
+      `SELECT p.*, pl.name AS plan_name, pl.sku_type, pl.slot_window, pl.total_meals,
               pl.kitchen_restaurant_id, r.name AS kitchen_name
          FROM user_meal_passes p
          JOIN meal_plans pl ON pl.id = p.plan_id
@@ -272,7 +318,8 @@ export class MealPassRepository {
 
   static async listDeliveries(userId: string, from?: Date, to?: Date) {
     const res = await getDbPool().query(
-      `SELECT d.*, pl.name AS plan_name, pl.sku_type, r.name AS kitchen_name
+      `SELECT d.*, to_char(d.delivery_date, 'YYYY-MM-DD') AS delivery_date_text,
+              pl.name AS plan_name, pl.sku_type, r.name AS kitchen_name
          FROM scheduled_meal_deliveries d
          JOIN user_meal_passes p ON p.id = d.pass_id
          JOIN meal_plans pl ON pl.id = p.plan_id

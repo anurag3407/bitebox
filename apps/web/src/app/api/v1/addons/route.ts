@@ -27,6 +27,7 @@ export const POST = route(async (req, _ctx, requestId) => {
       bagLabel: result.bagLabel,
       payablePaise: result.price.payablePaise,
       grossMarginPaise: result.price.grossMarginPaise,
+      paymentMethod: "WALLET",
     },
     201,
     { requestId }

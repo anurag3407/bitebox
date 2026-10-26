@@ -113,7 +113,7 @@ export async function handleDispatchOrder(job: ClaimedJob): Promise<void> {
   const attempt = Number(job.payload.attempt ?? 0);
 
   const res = await getDbPool().query(
-    `SELECT o.fulfillment_state, r.latitude, r.longitude,
+    `SELECT o.fulfillment_state, o.order_mode, r.latitude, r.longitude,
             EXISTS (SELECT 1 FROM delivery_assignments da WHERE da.order_id = o.id
                      AND da.status IN ('ASSIGNED', 'AT_PICKUP', 'PICKED_UP', 'AT_DROPOFF')) AS has_trip,
             EXISTS (SELECT 1 FROM delivery_offers d WHERE d.order_id = o.id
@@ -123,7 +123,15 @@ export async function handleDispatchOrder(job: ClaimedJob): Promise<void> {
     [orderId]
   );
   const row = res.rows[0];
-  if (!row || !DISPATCHABLE_STATES.includes(row.fulfillment_state) || row.has_trip || row.has_offer) return;
+  if (
+    !row ||
+    row.order_mode === "PICKUP" ||
+    !DISPATCHABLE_STATES.includes(row.fulfillment_state) ||
+    row.has_trip ||
+    row.has_offer
+  ) {
+    return;
+  }
 
   const pickup = { latitude: row.latitude, longitude: row.longitude };
   const online = await getDbPool().query(`SELECT id FROM riders WHERE is_online AND is_approved`);
@@ -239,6 +247,7 @@ export async function handleMaintenance(): Promise<void> {
   const orphaned = await pool.query(
     `SELECT o.id FROM orders o
       WHERE o.fulfillment_state = ANY($1::text[])
+        AND o.order_mode <> 'PICKUP'
         AND o.updated_at < NOW() - INTERVAL '3 minutes'
         AND NOT EXISTS (SELECT 1 FROM delivery_assignments da WHERE da.order_id = o.id
                          AND da.status IN ('ASSIGNED', 'AT_PICKUP', 'PICKED_UP', 'AT_DROPOFF'))

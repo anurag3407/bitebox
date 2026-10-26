@@ -159,4 +159,37 @@ export class JobRepository {
     );
     return res.rows;
   }
+
+  static async listRecent(status?: string, limit = 100) {
+    const res = await getDbPool().query(
+      `SELECT id, kind, status, attempt_count, max_attempts, run_at, last_error, updated_at
+         FROM jobs
+        WHERE ($1::text IS NULL OR status = $1)
+        ORDER BY updated_at DESC LIMIT $2`,
+      [status ?? null, limit]
+    );
+    return res.rows.map((r) => ({
+      id: r.id as string,
+      kind: r.kind as string,
+      status: r.status as string,
+      attemptCount: r.attempt_count as number,
+      maxAttempts: r.max_attempts as number,
+      runAt: (r.run_at as Date).toISOString(),
+      lastError: (r.last_error as string | null) ?? undefined,
+      updatedAt: (r.updated_at as Date).toISOString(),
+    }));
+  }
+
+  /** Requeues a failed job with a fresh attempt budget. */
+  static async retryFailed(jobId: string): Promise<boolean> {
+    const res = await getDbPool().query(
+      `UPDATE jobs
+          SET status = 'PENDING', run_at = NOW(), attempt_count = 0, last_error = NULL,
+              lease_owner = NULL, lease_expires_at = NULL, updated_at = NOW()
+        WHERE id = $1 AND status = 'FAILED'
+        RETURNING id`,
+      [jobId]
+    );
+    return res.rows.length > 0;
+  }
 }

@@ -16,6 +16,12 @@ const CreateAccount = z.object({
   creditLimitPaise: z.number().int().nonnegative().optional(),
 });
 
+export const GET = route(async (req, _ctx, requestId) => {
+  await requireAuth(req, [UserRole.ADMIN]);
+  const accounts = await CorporateRepository.listAccounts();
+  return apiSuccess({ accounts }, 200, { requestId });
+});
+
 export const POST = route(async (req, _ctx, requestId) => {
   await requireAuth(req, [UserRole.ADMIN]);
   const body = await parseBody(req, CreateAccount);

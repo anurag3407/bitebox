@@ -1,10 +1,13 @@
+import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import {
   AcquisitionChannel,
   FaultCode,
   FulfillmentState,
   OrderDetailDto,
+  OrderMode,
   OrderSummaryDto,
+  PaymentMethod,
   PaymentStatus,
   QuoteBreakdown,
   QuoteLineBreakdown,
@@ -16,6 +19,7 @@ import {
   LedgerEngine,
   LedgerAccountType,
   OrderStateMachine,
+  safeEqual,
 } from "@startup/core";
 import { getDbPool, withTransaction } from "../client.js";
 import { CouponRepository } from "./coupon.repository.js";
@@ -23,6 +27,8 @@ import { JobKind, JobRepository } from "./job.repository.js";
 import { LedgerRepository } from "./ledger.repository.js";
 import { OutboxRepository } from "./outbox.repository.js";
 import { RefundRepository } from "./refund.repository.js";
+import { WalletRepository } from "./wallet.repository.js";
+import { LoyaltyRepository } from "./loyalty.repository.js";
 
 type Queryable = Pick<PoolClient, "query">;
 
@@ -47,7 +53,7 @@ export interface CreateOrderParams {
   requestHash: string;
   customerId: string;
   restaurantId: string;
-  deliveryAddressId: string;
+  deliveryAddressId?: string;
   orderNumber: string;
   items: QuoteLineBreakdown[];
   breakdown: QuoteBreakdown;
@@ -56,7 +62,9 @@ export interface CreateOrderParams {
   pickupOtp: string;
   instructions?: string;
   estimatedDeliveryMinutes: number;
-  razorpayOrderId: string;
+  // Absent for wallet / COD orders, which never create a gateway order
+  razorpayOrderId?: string;
+  paymentMethod?: PaymentMethod;
   quoteId?: string;
   couponCode?: string;
   deliveryAddressSnapshot?: DeliveryAddressSnapshot;
@@ -65,18 +73,29 @@ export interface CreateOrderParams {
   commissionPaise?: number;
   merchantOrderFeePaise?: number;
   merchantNetPayoutPaise?: number;
+  merchantFundedDiscountPaise?: number;
   orderType?: "PRIMARY" | "ADDON" | "MEAL_PASS" | "SURPLUS" | "CORPORATE";
   parentOrderId?: string;
   slotWindow?: string;
   dropPointId?: string;
+  orderMode?: OrderMode;
+  scheduledFor?: string;
+  contactless?: boolean;
+  cutleryOptIn?: boolean;
+  deliveryPreference?: string;
+  recipientName?: string;
+  recipientPhone?: string;
+  giftMessage?: string;
 }
 
 export interface CheckoutResult {
   orderId: string;
   orderNumber: string;
-  paymentAttemptId: string;
-  razorpayOrderId: string;
+  paymentAttemptId?: string;
+  razorpayOrderId?: string;
   payablePaise: number;
+  paymentMethod?: PaymentMethod;
+  paymentStatus?: PaymentStatus;
   isDuplicate: boolean;
 }
 
@@ -95,6 +114,13 @@ export interface LockedOrderRow {
   commission_bp_applied: number | null;
   merchant_order_fee_paise: number;
   merchant_net_payout_paise: number | null;
+  merchant_funded_discount_paise: number;
+  payment_method: PaymentMethod;
+  refunded_paise: number;
+  scheduled_for: Date | null;
+  contactless: boolean;
+  order_mode: OrderMode;
+  pickup_otp: string;
 }
 
 // Timestamp column stamped when an order enters a state
@@ -129,11 +155,11 @@ function mapDetailRow(row: any): OrderDetailDto {
     },
     // Orders keep the address as it was at checkout even if the customer edits it later
     deliveryAddress: {
-      building: snapshot?.building ?? row.address_building,
-      street: snapshot?.street ?? row.address_street,
+      building: snapshot?.building ?? row.address_building ?? row.restaurant_name,
+      street: snapshot?.street ?? row.address_street ?? row.restaurant_address_text ?? "",
       landmark: (snapshot?.landmark ?? row.address_landmark) || undefined,
-      latitude: snapshot?.latitude ?? row.address_latitude,
-      longitude: snapshot?.longitude ?? row.address_longitude,
+      latitude: snapshot?.latitude ?? row.address_latitude ?? row.restaurant_latitude ?? 0,
+      longitude: snapshot?.longitude ?? row.address_longitude ?? row.restaurant_longitude ?? 0,
       contactPhone: (snapshot?.contactPhone ?? row.address_contact_phone) || undefined,
     },
     items: row.items_json as QuoteLineBreakdown[],
@@ -148,6 +174,19 @@ function mapDetailRow(row: any): OrderDetailDto {
       : undefined,
     deliveryOtp: row.delivery_otp,
     pickupCode: row.pickup_otp,
+    orderMode: row.order_mode ?? "DELIVERY",
+    scheduledFor: row.scheduled_for?.toISOString(),
+    contactless: row.contactless ?? false,
+    cutleryOptIn: row.cutlery_opt_in ?? true,
+    deliveryPreference: row.delivery_preference ?? undefined,
+    paymentMethod: row.payment_method ?? "RAZORPAY",
+    deliveryProofUrl: row.delivery_proof_url ?? undefined,
+    pickupVerifiedAt: row.pickup_verified_at?.toISOString(),
+    recipientName: row.recipient_name ?? undefined,
+    recipientPhone: row.recipient_phone ?? undefined,
+    giftMessage: row.gift_message ?? undefined,
+    tipPaise: row.tip_paise ?? undefined,
+    tipCreatedAt: row.tip_created_at?.toISOString(),
     instructions: row.instructions ?? undefined,
     couponCode: row.coupon_code ?? undefined,
     prepTimeMinutes: row.prep_time_minutes ?? undefined,
@@ -179,21 +218,24 @@ function mapDetailRow(row: any): OrderDetailDto {
 const DETAIL_SELECT = `
   SELECT o.*,
          r.name AS restaurant_name, r.phone AS restaurant_phone, r.hero_image_url AS restaurant_hero_image_url,
-         r.slug AS restaurant_slug,
+         r.slug AS restaurant_slug, r.address_text AS restaurant_address_text,
+         r.latitude AS restaurant_latitude, r.longitude AS restaurant_longitude,
          a.building AS address_building, a.street AS address_street, a.landmark AS address_landmark,
          a.latitude AS address_latitude, a.longitude AS address_longitude, a.contact_phone AS address_contact_phone,
          rd.name AS rider_name, rd.phone AS rider_phone, rd.vehicle_type AS rider_vehicle_type,
-         rt.food_rating, rt.delivery_rating, rt.comment AS rating_comment
+         rt.food_rating, rt.delivery_rating, rt.comment AS rating_comment,
+         tip.amount_paise AS tip_paise, tip.created_at AS tip_created_at
     FROM orders o
     JOIN restaurants r ON r.id = o.restaurant_id
-    JOIN customer_addresses a ON a.id = o.delivery_address_id
+    LEFT JOIN customer_addresses a ON a.id = o.delivery_address_id
     LEFT JOIN LATERAL (
       SELECT rider_id FROM delivery_assignments da
        WHERE da.order_id = o.id AND da.status <> 'CANCELLED'
        ORDER BY da.assigned_at DESC LIMIT 1
     ) last_trip ON true
     LEFT JOIN riders rd ON rd.id = last_trip.rider_id
-    LEFT JOIN order_ratings rt ON rt.order_id = o.id`;
+    LEFT JOIN order_ratings rt ON rt.order_id = o.id
+    LEFT JOIN LATERAL (SELECT amount_paise, created_at FROM order_tips WHERE order_id = o.id LIMIT 1) tip ON true`;
 
 export class OrderRepository {
   static async findCompletedCheckout(principalId: string, idempotencyKey: string, requestHash: string) {
@@ -251,18 +293,21 @@ export class OrderRepository {
              quote_id, coupon_code, delivery_address_snapshot,
              acquisition_channel, commission_bp_applied, commission_paise,
              merchant_order_fee_paise, merchant_net_payout_paise, order_type,
-             parent_order_id, slot_window, drop_point_id, slot_cutoff_at
+             parent_order_id, slot_window, drop_point_id, slot_cutoff_at,
+             order_mode, scheduled_for, contactless, cutlery_opt_in, delivery_preference, payment_method,
+             recipient_name, recipient_phone, gift_message, merchant_funded_discount_paise
            ) VALUES (
              gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'PENDING_PAYMENT', 'PENDING',
              $7, $8, $9, $10, $11, $12, $13, $14,
              $15, $16, $17, $18, $19, $20, $21, $22, $23,
-             $11::timestamptz - interval '30 minutes'
+             COALESCE($25::timestamptz, $11::timestamptz) - interval '30 minutes',
+             $24, $25, $26, $27, $28, $29, $30, $31, $32, $33
            ) RETURNING id`,
           [
             params.orderNumber,
             params.customerId,
             params.restaurantId,
-            params.deliveryAddressId,
+            params.deliveryAddressId ?? null,
             JSON.stringify(params.items),
             JSON.stringify({ ...params.breakdown, quoteId: params.quoteId }),
             params.payablePaise,
@@ -282,6 +327,16 @@ export class OrderRepository {
             params.parentOrderId ?? null,
             params.slotWindow ?? null,
             params.dropPointId ?? null,
+            params.orderMode ?? OrderMode.DELIVERY,
+            params.scheduledFor ?? null,
+            params.contactless ?? false,
+            params.cutleryOptIn ?? true,
+            params.deliveryPreference ?? null,
+            params.paymentMethod ?? PaymentMethod.RAZORPAY,
+            params.recipientName ?? null,
+            params.recipientPhone ?? null,
+            params.giftMessage ?? null,
+            params.merchantFundedDiscountPaise ?? 0,
           ]
         );
         const orderId: string = orderRes.rows[0].id;
@@ -310,13 +365,99 @@ export class OrderRepository {
           });
         }
 
-        const attemptRes = await client.query(
-          `INSERT INTO payment_attempts (id, order_id, razorpay_order_id, status, amount_paise, currency)
-           VALUES (gen_random_uuid(), $1, $2, 'READY', $3, 'INR')
-           RETURNING id`,
-          [orderId, params.razorpayOrderId, params.payablePaise]
-        );
-        const paymentAttemptId: string = attemptRes.rows[0].id;
+        const paymentMethod = params.paymentMethod ?? PaymentMethod.RAZORPAY;
+        let paymentAttemptId: string | undefined;
+        let paymentStatus: PaymentStatus = PaymentStatus.PENDING;
+        if (paymentMethod === PaymentMethod.RAZORPAY) {
+          if (!params.razorpayOrderId) throw new DomainError("VALIDATION_ERROR", "Gateway order is required for card payments");
+          const attemptRes = await client.query(
+            `INSERT INTO payment_attempts (id, order_id, razorpay_order_id, status, amount_paise, currency)
+             VALUES (gen_random_uuid(), $1, $2, 'READY', $3, 'INR')
+             RETURNING id`,
+            [orderId, params.razorpayOrderId, params.payablePaise]
+          );
+          paymentAttemptId = attemptRes.rows[0].id;
+
+          // Unpaid gateway orders are reconciled with the gateway and then expired
+          await JobRepository.enqueueWithClient(client, JobKind.PAYMENT_EXPIRY, { orderId }, {
+            runAt: new Date(Date.now() + PAYMENT_WINDOW_MINUTES * 60 * 1000),
+            dedupeKey: `payment-expiry:${orderId}`,
+          });
+        } else {
+          // Wallet and cash orders are confirmed immediately, without a gateway round-trip.
+          const locked = {
+            id: orderId,
+            order_number: params.orderNumber,
+            customer_id: params.customerId,
+            restaurant_id: params.restaurantId,
+            fulfillment_state: FulfillmentState.PENDING_PAYMENT,
+            payment_status: PaymentStatus.PENDING,
+            payable_paise: params.payablePaise,
+            breakdown_json: params.breakdown,
+            version: 1,
+            prep_time_minutes: null,
+            acquisition_channel: params.acquisitionChannel ?? AcquisitionChannel.MARKETPLACE,
+            commission_bp_applied: params.commissionBpApplied ?? null,
+            merchant_order_fee_paise: params.merchantOrderFeePaise ?? 0,
+            merchant_net_payout_paise: params.merchantNetPayoutPaise ?? null,
+            merchant_funded_discount_paise: params.merchantFundedDiscountPaise ?? 0,
+            payment_method: paymentMethod,
+            refunded_paise: 0,
+            scheduled_for: params.scheduledFor ? new Date(params.scheduledFor) : null,
+            contactless: params.contactless ?? false,
+            order_mode: params.orderMode ?? OrderMode.DELIVERY,
+            pickup_otp: params.pickupOtp,
+          } as LockedOrderRow;
+          if (paymentMethod === PaymentMethod.WALLET) {
+            await WalletRepository.debitForOrderWithClient(client, {
+              userId: params.customerId,
+              orderId,
+              amountPaise: params.payablePaise,
+              description: `Order ${params.orderNumber} paid with BiteBox Credits`,
+            });
+            const payRes = await client.query(
+              `INSERT INTO payments (id, order_id, payment_attempt_id, provider_payment_id, status, amount_paise, currency)
+               VALUES (gen_random_uuid(), $1, NULL, $2, 'CAPTURED', $3, 'INR') RETURNING id`,
+              [orderId, `wallet:${orderId}`, params.payablePaise]
+            );
+            await LedgerRepository.postTransactionWithClient(client, {
+              orderId,
+              paymentId: payRes.rows[0].id,
+              effectType: "CAPTURE",
+              entries: LedgerEngine.buildOrderCaptureEntries({
+                payablePaise: params.breakdown.payablePaise,
+                subtotalPaise: params.breakdown.subtotalPaise,
+                deliveryFeePaise: params.breakdown.deliveryFeePaise,
+                platformFeePaise: params.breakdown.platformFeePaise,
+                packagingPaise: params.breakdown.packagingPaise,
+                taxPaise: params.breakdown.taxPaise,
+                discountPaise: params.breakdown.discountPaise,
+                surgePaise: params.breakdown.surgePaise,
+                tipPaise: params.breakdown.tipPaise ?? 0,
+                commissionRateBasisPoints: params.commissionBpApplied,
+                merchantOrderFeePaise: params.merchantOrderFeePaise,
+                merchantFundedDiscountPaise: params.merchantFundedDiscountPaise,
+              }),
+            });
+            await client.query(`UPDATE orders SET payment_status = 'CAPTURED' WHERE id = $1`, [orderId]);
+            paymentStatus = PaymentStatus.CAPTURED;
+            await CouponRepository.markRedeemedWithClient(client, orderId);
+          }
+
+          const deadline = new Date(Date.now() + MERCHANT_ACCEPTANCE_WINDOW_SECONDS * 1000);
+          await client.query(`UPDATE orders SET merchant_response_deadline_at = $2 WHERE id = $1`, [orderId, deadline]);
+          await OrderRepository.transitionLockedWithClient(client, locked, {
+            toState: FulfillmentState.AWAITING_MERCHANT,
+            actorType: "SYSTEM",
+            actorId: paymentMethod === PaymentMethod.WALLET ? "WALLET" : "COD",
+            reason: paymentMethod === PaymentMethod.WALLET ? "Paid with BiteBox Credits" : "Cash on delivery confirmed",
+            extra: { orderMode: params.orderMode ?? OrderMode.DELIVERY },
+          });
+          await JobRepository.enqueueWithClient(client, JobKind.MERCHANT_ACCEPTANCE_TIMEOUT, { orderId }, {
+            runAt: deadline,
+            dedupeKey: `merchant-timeout:${orderId}`,
+          });
+        }
 
         await OutboxRepository.appendWithClient(client, "order.created", orderId, 1, {
           orderId,
@@ -324,12 +465,7 @@ export class OrderRepository {
           customerId: params.customerId,
           restaurantId: params.restaurantId,
           payablePaise: params.payablePaise,
-        });
-
-        // Unpaid orders are reconciled with the gateway and then expired
-        await JobRepository.enqueueWithClient(client, JobKind.PAYMENT_EXPIRY, { orderId }, {
-          runAt: new Date(Date.now() + PAYMENT_WINDOW_MINUTES * 60 * 1000),
-          dedupeKey: `payment-expiry:${orderId}`,
+          paymentMethod,
         });
 
         // Fifteen minutes before the slot cutoff, prompt a one-tap add-on in the same crate.
@@ -346,6 +482,8 @@ export class OrderRepository {
           paymentAttemptId,
           razorpayOrderId: params.razorpayOrderId,
           payablePaise: params.payablePaise,
+          paymentMethod,
+          paymentStatus,
         };
 
         await client.query(
@@ -375,12 +513,14 @@ export class OrderRepository {
     fulfillmentState: string;
     paymentStatus: string;
     payablePaise: number;
+    paymentMethod?: PaymentMethod;
     paymentAttemptId?: string;
     razorpayOrderId?: string;
     attemptStatus?: string;
   } | null> {
     const res = await getDbPool().query(
       `SELECT o.id, o.order_number, o.customer_id, o.fulfillment_state, o.payment_status, o.payable_paise,
+              o.payment_method,
               pa.id as payment_attempt_id, pa.razorpay_order_id, pa.status as attempt_status
        FROM orders o
        LEFT JOIN LATERAL (
@@ -399,6 +539,7 @@ export class OrderRepository {
       fulfillmentState: row.fulfillment_state,
       paymentStatus: row.payment_status,
       payablePaise: row.payable_paise,
+      paymentMethod: row.payment_method as PaymentMethod,
       paymentAttemptId: row.payment_attempt_id ?? undefined,
       razorpayOrderId: row.razorpay_order_id ?? undefined,
       attemptStatus: row.attempt_status ?? undefined,
@@ -503,7 +644,8 @@ export class OrderRepository {
     const res = await client.query(
       `SELECT id, order_number, customer_id, restaurant_id, fulfillment_state, payment_status,
               payable_paise, breakdown_json, version, prep_time_minutes,
-              acquisition_channel, commission_bp_applied, merchant_order_fee_paise, merchant_net_payout_paise
+              acquisition_channel, commission_bp_applied, merchant_order_fee_paise, merchant_net_payout_paise,
+              payment_method, refunded_paise, scheduled_for, contactless, order_mode, pickup_otp
          FROM orders WHERE id = $1 FOR UPDATE`,
       [orderId]
     );
@@ -625,20 +767,65 @@ export class OrderRepository {
         extra: { prepTimeMinutes: input.prepTimeMinutes },
       });
 
-      const promised = new Date(Date.now() + (input.prepTimeMinutes + input.lastMileMinutes + 4) * 60_000);
+      const isPickup = order.order_mode === OrderMode.PICKUP;
+      const promised = order.scheduled_for
+        ? order.scheduled_for
+        : new Date(Date.now() + (input.prepTimeMinutes + (isPickup ? 0 : input.lastMileMinutes + 4)) * 60_000);
       await client.query(
         `UPDATE orders SET prep_time_minutes = $2, promised_delivery_at = $3, merchant_response_deadline_at = NULL
           WHERE id = $1`,
         [order.id, input.prepTimeMinutes, promised.toISOString()]
       );
 
-      // Start looking for a rider so they reach the store ~when food is ready
-      const leadMinutes = (input.travelToPickupMinutes ?? 8) + 2;
-      const dispatchDelayMs = Math.max(0, (input.prepTimeMinutes - leadMinutes) * 60_000);
-      await JobRepository.enqueueWithClient(client, JobKind.DISPATCH_ORDER, { orderId: order.id, attempt: 0 }, {
-        runAt: new Date(Date.now() + dispatchDelayMs),
-        dedupeKey: `dispatch:${order.id}:0`,
+      // Pickup has no rider. Delivery starts looking for one so the rider reaches the
+      // store ~when food is ready; scheduled orders anchor backwards from the slot.
+      if (!isPickup) {
+        const leadMinutes = (input.travelToPickupMinutes ?? 8) + 2;
+        const dispatchDelayMs = order.scheduled_for
+          ? Math.max(0, order.scheduled_for.getTime() - Date.now() - (input.lastMileMinutes + leadMinutes) * 60_000)
+          : Math.max(0, (input.prepTimeMinutes - leadMinutes) * 60_000);
+        await JobRepository.enqueueWithClient(client, JobKind.DISPATCH_ORDER, { orderId: order.id, attempt: 0 }, {
+          runAt: new Date(Date.now() + dispatchDelayMs),
+          dedupeKey: `dispatch:${order.id}:0`,
+        });
+      }
+    });
+  }
+
+  /**
+   * Self-pickup handover: the restaurant enters the customer's pickup code at the
+   * counter. No rider, no delivery OTP; the invoice is queued on collection.
+   */
+  static async completePickup(input: { orderId: string; actorId: string; pickupCode: string }) {
+    return withTransaction(async (client) => {
+      const order = await OrderRepository.lockForUpdate(client, input.orderId);
+      if (order.order_mode !== OrderMode.PICKUP) {
+        throw new DomainError("STATE_CONFLICT", "This is a delivery order.");
+      }
+      if (order.fulfillment_state !== FulfillmentState.READY_FOR_PICKUP) {
+        throw new DomainError("STATE_CONFLICT", "Mark the order ready before handing it over.", {
+          details: { currentState: order.fulfillment_state },
+        });
+      }
+      if (!safeEqual(input.pickupCode, order.pickup_otp)) {
+        throw new DomainError("VALIDATION_ERROR", "Incorrect pickup code. Ask the customer to read it again.");
+      }
+      const updated = await OrderRepository.transitionLockedWithClient(client, order, {
+        toState: FulfillmentState.DELIVERED,
+        actorType: "MERCHANT",
+        actorId: input.actorId,
+        reason: "Collected by customer with pickup code",
       });
+      await client.query(`UPDATE orders SET pickup_verified_at = NOW() WHERE id = $1`, [order.id]);
+      await LoyaltyRepository.rewardDeliveryWithClient(client, {
+        userId: order.customer_id,
+        orderId: order.id,
+        subtotalPaise: order.breakdown_json.subtotalPaise,
+      });
+      await JobRepository.enqueueWithClient(client, JobKind.ISSUE_INVOICE, { orderId: order.id }, {
+        dedupeKey: `invoice:${order.id}`,
+      });
+      return { fulfillmentState: updated.fulfillment_state, orderNumber: order.order_number };
     });
   }
 
@@ -748,6 +935,7 @@ export class OrderRepository {
           tipPaise: breakdown.tipPaise ?? 0,
           commissionRateBasisPoints: commissionBp,
           merchantOrderFeePaise: order.merchant_order_fee_paise ?? 0,
+          merchantFundedDiscountPaise: order.merchant_funded_discount_paise ?? 0,
         }),
       });
       await client.query(`UPDATE orders SET payment_status = 'CAPTURED', updated_at = NOW() WHERE id = $1`, [order.id]);
@@ -802,6 +990,55 @@ export class OrderRepository {
       });
       return { outcome: "CAPTURED" as const };
     });
+  }
+
+  /**
+   * Cash collected by the rider at the door. Runs inside the delivery transaction,
+   * so an order can never be DELIVERED with unrecorded cash.
+   */
+  static async recordCodCollectionWithClient(client: PoolClient, order: LockedOrderRow): Promise<string | null> {
+    if (order.payment_method !== PaymentMethod.COD || order.payment_status !== PaymentStatus.PENDING) return null;
+    if (order.payable_paise <= 0) return null;
+
+    const payRes = await client.query(
+      `INSERT INTO payments (id, order_id, payment_attempt_id, provider_payment_id, status, amount_paise, currency)
+       VALUES (gen_random_uuid(), $1, NULL, $2, 'CAPTURED', $3, 'INR') RETURNING id`,
+      [order.id, `cod:${order.id}`, order.payable_paise]
+    );
+    const paymentId = payRes.rows[0].id as string;
+    const b = order.breakdown_json;
+    const entries = LedgerEngine.buildOrderCaptureEntries({
+      payablePaise: b.payablePaise,
+      subtotalPaise: b.subtotalPaise,
+      deliveryFeePaise: b.deliveryFeePaise,
+      platformFeePaise: b.platformFeePaise,
+      packagingPaise: b.packagingPaise,
+      taxPaise: b.taxPaise,
+      discountPaise: b.discountPaise,
+      surgePaise: b.surgePaise,
+      tipPaise: b.tipPaise ?? 0,
+      commissionRateBasisPoints: order.commission_bp_applied ?? undefined,
+      merchantOrderFeePaise: order.merchant_order_fee_paise,
+      merchantFundedDiscountPaise: order.merchant_funded_discount_paise ?? 0,
+    }).map((entry) =>
+      entry.account === LedgerAccountType.GATEWAY_CLEARING
+        ? { ...entry, account: LedgerAccountType.CASH_IN_TRANSIT, description: "Cash collected by delivery partner" }
+        : entry
+    );
+    await LedgerRepository.postTransactionWithClient(client, {
+      orderId: order.id,
+      paymentId,
+      effectType: "CAPTURE",
+      entries,
+    });
+    await client.query(`UPDATE orders SET payment_status = 'CAPTURED', updated_at = NOW() WHERE id = $1`, [order.id]);
+    await CouponRepository.markRedeemedWithClient(client, order.id);
+    await OutboxRepository.appendWithClient(client, "payment.cod_collected", order.id, order.version, {
+      orderId: order.id,
+      paymentId,
+      amountPaise: order.payable_paise,
+    });
+    return paymentId;
   }
 
   static async recordPaymentFailure(input: { razorpayOrderId: string; reason?: string }): Promise<void> {
@@ -866,24 +1103,56 @@ export class OrderRepository {
       let refundAmount: number | undefined;
       if (decision.refundPolicy === "FULL") refundAmount = undefined; // full balance
       else if (decision.refundPolicy === "DISCRETIONARY") refundAmount = input.refundAmountPaise;
+      const paid = order.payment_status !== PaymentStatus.PENDING;
       const shouldRefund =
-        decision.refundPolicy === "FULL" ||
-        (decision.refundPolicy === "DISCRETIONARY" && input.refundAmountPaise !== 0);
+        paid &&
+        (decision.refundPolicy === "FULL" ||
+          (decision.refundPolicy === "DISCRETIONARY" && input.refundAmountPaise !== 0));
 
       let refundedPaise = 0;
       if (shouldRefund) {
-        const refund = await RefundRepository.issueWithClient(client, {
-          orderId: order.id,
-          amountPaise: refundAmount,
-          reason: input.reason,
-          initiatedBy: input.actorId ? `${input.actor}:${input.actorId}` : input.actor,
-          faultCode: input.faultCode,
-        });
-        refundedPaise = refund?.amountPaise ?? 0;
+        if (order.payment_method === PaymentMethod.WALLET || order.payment_method === PaymentMethod.COD) {
+          // Money already held by the platform (credits or cash) goes straight back to credits
+          const refundable = Math.max(0, order.payable_paise - order.refunded_paise);
+          const amount = Math.min(refundable, refundAmount ?? refundable);
+          if (amount > 0) {
+            const refundRes = await client.query(
+              `INSERT INTO refunds
+                 (order_id, payment_id, provider_refund_id, status, amount_paise, reason, initiated_by, processed_at)
+               VALUES ($1, NULL, $2, 'PROCESSED', $3, $4, $5, NOW()) RETURNING id`,
+              [
+                order.id,
+                `wallet-refund:${order.id}:${randomUUID()}`,
+                amount,
+                input.reason,
+                input.actorId ? `${input.actor}:${input.actorId}` : input.actor,
+              ]
+            );
+            await WalletRepository.creditWithClient(client, {
+              userId: order.customer_id,
+              kind: "REFUND_CREDIT",
+              amountPaise: amount,
+              referenceType: "REFUND",
+              referenceId: refundRes.rows[0].id,
+              description: `Refund for order ${order.order_number}`,
+              orderId: order.id,
+            });
+            await client.query(`UPDATE orders SET refunded_paise = refunded_paise + $2 WHERE id = $1`, [order.id, amount]);
+            refundedPaise = amount;
+          }
+        } else {
+          const refund = await RefundRepository.issueWithClient(client, {
+            orderId: order.id,
+            amountPaise: refundAmount,
+            reason: input.reason,
+            initiatedBy: input.actorId ? `${input.actor}:${input.actorId}` : input.actor,
+            faultCode: input.faultCode,
+          });
+          refundedPaise = refund?.amountPaise ?? 0;
+        }
       }
 
       // The coupon goes back to the customer unless they were charged and kept part of the value
-      const paid = order.payment_status !== PaymentStatus.PENDING;
       if (!paid || decision.refundPolicy === "FULL" || refundAmount === undefined) {
         await CouponRepository.releaseWithClient(client, order.id);
       }
@@ -913,13 +1182,13 @@ export class OrderRepository {
     const res = await getDbPool().query(
       `SELECT o.id, o.order_number, o.fulfillment_state, o.payment_status, o.payable_paise, o.refunded_paise,
               o.created_at, o.updated_at, o.promised_delivery_at,
-              r.name AS restaurant_name,
-              COALESCE(o.delivery_address_snapshot->>'building', a.building) AS building,
-              COALESCE(o.delivery_address_snapshot->>'street', a.street) AS street,
+              r.name AS restaurant_name, r.address_text AS restaurant_address,
+              COALESCE(o.delivery_address_snapshot->>'building', a.building, r.name) AS building,
+              COALESCE(o.delivery_address_snapshot->>'street', a.street, r.address_text) AS street,
               rd.name AS rider_name
          FROM orders o
          JOIN restaurants r ON r.id = o.restaurant_id
-         JOIN customer_addresses a ON a.id = o.delivery_address_id
+         LEFT JOIN customer_addresses a ON a.id = o.delivery_address_id
          LEFT JOIN delivery_assignments da
            ON da.order_id = o.id AND da.status IN ('ASSIGNED', 'AT_PICKUP', 'PICKED_UP', 'AT_DROPOFF')
          LEFT JOIN riders rd ON rd.id = da.rider_id

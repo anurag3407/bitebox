@@ -1,6 +1,7 @@
 import { DomainError, LedgerEngine, buildAddonBagLabel, generateOrderNumber, priceOneTapAddon, selectUpsellSkus } from "@startup/core";
 import { getDbPool, withTransaction } from "../client.js";
 import { LedgerRepository } from "./ledger.repository.js";
+import { WalletRepository } from "./wallet.repository.js";
 
 export class AddonRepository {
   static async createSku(input: {
@@ -130,9 +131,9 @@ export class AddonRepository {
             fulfillment_state, payment_status, payable_paise, delivery_otp, pickup_otp,
             promised_delivery_at, parent_order_id, order_type, acquisition_channel,
             commission_paise, merchant_order_fee_paise, merchant_net_payout_paise,
-            addon_gross_margin_paise, bag_label, accepted_at, slot_cutoff_at)
+            addon_gross_margin_paise, bag_label, accepted_at, slot_cutoff_at, payment_method)
          VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'ACCEPTED', 'CAPTURED', $7, $8, $9, $10, $11,
-                 'ADDON', $12, 0, 0, $13, $14, $15, NOW(), $16)
+                 'ADDON', $12, 0, 0, $13, $14, $15, NOW(), $16, 'WALLET')
          RETURNING *`,
         [
           orderNumber,
@@ -154,10 +155,16 @@ export class AddonRepository {
         ]
       );
       const child = childRes.rows[0];
+      await WalletRepository.debitForOrderWithClient(client, {
+        userId: input.customerId,
+        orderId: child.id,
+        amountPaise: price.payablePaise,
+        description: `Add-on ${sku.name}`,
+      });
       const paymentRes = await client.query(
         `INSERT INTO payments (id, order_id, provider_payment_id, status, amount_paise, currency)
          VALUES (gen_random_uuid(), $1, $2, 'CAPTURED', $3, 'INR') RETURNING id`,
-        [child.id, `ADDON:${child.id}`, price.payablePaise]
+        [child.id, `wallet:${child.id}`, price.payablePaise]
       );
       await LedgerRepository.postTransactionWithClient(client, {
         orderId: child.id,

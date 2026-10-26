@@ -1,4 +1,4 @@
-import { CreateQuoteRequestSchema, MenuItemDto, QuoteLineBreakdown, QuoteResponse } from "@startup/contracts";
+import { CreateQuoteRequestSchema, MenuItemDto, OrderMode, QuoteLineBreakdown, QuoteResponse } from "@startup/contracts";
 import {
   CouponDiscountRule,
   DomainError,
@@ -11,6 +11,7 @@ import {
   AddressRepository,
   BatchRepository,
   CouponRepository,
+  LoyaltyRepository,
   RestaurantRepository,
   evaluateAvailability,
   getDb,
@@ -31,8 +32,21 @@ const QUOTE_TTL_MINUTES = 10;
 export const POST = route(async (req, _ctx, requestId) => {
   const auth = await requireAuth(req);
   await enforceRateLimit(req, "quote", auth.user.id);
-  const { restaurantId, deliveryAddressId, destinationLocation, items, couponCode, tipPaise, dropPointId, slotWindow } =
-    await parseBody(req, CreateQuoteRequestSchema);
+  const {
+    restaurantId,
+    deliveryAddressId,
+    destinationLocation,
+    items,
+    couponCode,
+    tipPaise,
+    dropPointId,
+    slotWindow,
+    orderMode,
+    scheduledFor,
+    contactless,
+    cutleryOptIn,
+    deliveryPreference,
+  } = await parseBody(req, CreateQuoteRequestSchema);
 
   // 1. Restaurant must exist and be taking orders right now
   const restaurant = await RestaurantRepository.findById(restaurantId);
@@ -48,34 +62,40 @@ export const POST = route(async (req, _ctx, requestId) => {
     throw new DomainError("SERVICEABILITY_ERROR", "This restaurant is not accepting orders at the moment.");
   }
 
-  // 2. Destination: a saved address of this user, or raw coordinates for a preview
-  let destination = destinationLocation;
-  if (deliveryAddressId) {
-    const address = await AddressRepository.findById(deliveryAddressId);
-    if (!address || address.userId !== auth.user.id || address.isDeleted) {
-      throw new DomainError("NOT_FOUND", "Delivery address not found");
-    }
-    destination = { latitude: address.latitude, longitude: address.longitude };
-  }
-  if (!destination) throw new DomainError("VALIDATION_ERROR", "A delivery location is required");
-
-  // 3. Serviceability: inside an operating zone and within this outlet's radius
-  const zones = await getDb().select().from(serviceZones).where(eq(serviceZones.isActive, true));
-  const inZone = zones.some((z) =>
-    ServiceabilityPolicy.isPointInPolygon(destination!, (z.polygonGeojson as Array<{ latitude: number; longitude: number }>) ?? [])
-  );
-  if (!inZone) throw new DomainError("SERVICEABILITY_ERROR", "We don't deliver to this location yet.");
-
+  const isPickup = orderMode === OrderMode.PICKUP;
   const restaurantLocation = { latitude: restaurant.latitude, longitude: restaurant.longitude };
-  const radiusCheck = ServiceabilityPolicy.isRestaurantServiceable(
-    restaurantLocation,
-    destination,
-    restaurant.maxDeliveryRadiusMeters
-  );
-  if (!radiusCheck.isServiceable) {
-    throw new DomainError("SERVICEABILITY_ERROR", "This restaurant does not deliver to your location.", {
-      details: { distanceMeters: radiusCheck.distanceMeters },
-    });
+
+  // 2. Destination: saved address for delivery, or the restaurant itself for pickup
+  let destination = isPickup ? restaurantLocation : destinationLocation;
+  if (!isPickup) {
+    if (deliveryAddressId) {
+      const address = await AddressRepository.findById(deliveryAddressId);
+      if (!address || address.userId !== auth.user.id || address.isDeleted) {
+        throw new DomainError("NOT_FOUND", "Delivery address not found");
+      }
+      destination = { latitude: address.latitude, longitude: address.longitude };
+    }
+    if (!destination) throw new DomainError("VALIDATION_ERROR", "A delivery location is required");
+  }
+
+  // 3. Serviceability applies to delivery only; anyone can collect from the outlet
+  if (!isPickup) {
+    const zones = await getDb().select().from(serviceZones).where(eq(serviceZones.isActive, true));
+    const inZone = zones.some((z) =>
+      ServiceabilityPolicy.isPointInPolygon(destination!, (z.polygonGeojson as Array<{ latitude: number; longitude: number }>) ?? [])
+    );
+    if (!inZone) throw new DomainError("SERVICEABILITY_ERROR", "We don't deliver to this location yet.");
+
+    const radiusCheck = ServiceabilityPolicy.isRestaurantServiceable(
+      restaurantLocation,
+      destination!,
+      restaurant.maxDeliveryRadiusMeters
+    );
+    if (!radiusCheck.isServiceable) {
+      throw new DomainError("SERVICEABILITY_ERROR", "This restaurant does not deliver to your location.", {
+        details: { distanceMeters: radiusCheck.distanceMeters },
+      });
+    }
   }
 
   // 4. Authoritative menu: prices, availability, variants and modifiers come from the server
@@ -125,8 +145,10 @@ export const POST = route(async (req, _ctx, requestId) => {
     });
   }
 
-  // 5. Road distance drives the delivery fee and ETA (falls back to an estimate if Mapbox is down)
-  const roadRoute = await new MapboxAdapter().calculateRoute(restaurantLocation, destination);
+  // 5. Road distance drives the delivery fee and ETA. Pickup has no last mile.
+  const roadRoute = isPickup
+    ? { distanceMeters: 0, durationSeconds: 0 }
+    : await new MapboxAdapter().calculateRoute(restaurantLocation, destination!);
 
   const subtotal = PricingCalculator.calculateSubtotal(quoteLines);
   if (subtotal > PricingCalculator.MAX_ORDER_SUBTOTAL_PAISE) {
@@ -135,6 +157,14 @@ export const POST = route(async (req, _ctx, requestId) => {
       `Orders above ₹${PricingCalculator.MAX_ORDER_SUBTOTAL_PAISE / 100} need to be placed with support.`
     );
   }
+
+  // Gold members get free delivery above their plan threshold
+  const membership = await LoyaltyRepository.getActive(auth.user.id);
+  const goldFreeDelivery =
+    !isPickup &&
+    !!membership &&
+    membership.benefits.freeDeliveryAbovePaise !== undefined &&
+    subtotal >= membership.benefits.freeDeliveryAbovePaise;
 
   // 6. Coupon: an invalid code never blocks the quote, it is reported back instead
   let couponRule: CouponDiscountRule | undefined;
@@ -168,8 +198,9 @@ export const POST = route(async (req, _ctx, requestId) => {
     packagingFeePaise: restaurant.packagingFeePaise,
     coupon: couponRule,
     tipPaise,
-    deliveryFeeOverridePaise:
-      dropPointId && slotWindow
+    deliveryFeeOverridePaise: isPickup || goldFreeDelivery
+      ? 0
+      : dropPointId && slotWindow
         ? (
             await BatchRepository.quoteSlot({
               dropPointId,
@@ -179,11 +210,17 @@ export const POST = route(async (req, _ctx, requestId) => {
         : undefined,
   });
 
-  const eta = EtaCalculator.calculate({
-    prepTimeMinutes: restaurant.avgPrepMinutes,
-    travelToPickupMinutes: 8,
-    lastMileTravelMinutes: Math.ceil(roadRoute.durationSeconds / 60),
-  });
+  const eta = isPickup
+    ? EtaCalculator.calculate({
+        prepTimeMinutes: restaurant.avgPrepMinutes,
+        travelToPickupMinutes: 0,
+        lastMileTravelMinutes: 0,
+      })
+    : EtaCalculator.calculate({
+        prepTimeMinutes: restaurant.avgPrepMinutes,
+        travelToPickupMinutes: 8,
+        lastMileTravelMinutes: Math.ceil(roadRoute.durationSeconds / 60),
+      });
 
   // 7. Persist the quote: checkout charges exactly this, or asks the customer to re-price
   const expiresAt = new Date(Date.now() + QUOTE_TTL_MINUTES * 60 * 1000);
@@ -192,17 +229,22 @@ export const POST = route(async (req, _ctx, requestId) => {
     .values({
       customerId: auth.user.id,
       restaurantId: restaurant.id,
-      deliveryAddressId: deliveryAddressId ?? null,
+      deliveryAddressId: isPickup ? null : deliveryAddressId ?? null,
       itemsJson: quoteLines,
       breakdownJson: breakdown,
       estimatedMinMinutes: eta.minEtaMinutes,
       estimatedMaxMinutes: eta.maxEtaMinutes,
       couponCode: appliedCouponCode ?? null,
-      distanceMeters: roadRoute.distanceMeters,
-      destinationLatitude: destination.latitude,
-      destinationLongitude: destination.longitude,
+      distanceMeters: isPickup ? 0 : roadRoute.distanceMeters,
+      destinationLatitude: destination!.latitude,
+      destinationLongitude: destination!.longitude,
       dropPointId: dropPointId ?? null,
       slotWindow: slotWindow ?? null,
+      orderMode,
+      scheduledFor: scheduledFor ? new Date(scheduledFor) : null,
+      contactless: isPickup ? false : contactless,
+      cutleryOptIn,
+      deliveryPreference: deliveryPreference ?? null,
       expiresAt,
     })
     .returning();
@@ -219,6 +261,13 @@ export const POST = route(async (req, _ctx, requestId) => {
     expiresAt: expiresAt.toISOString(),
     appliedCouponCode,
     couponError,
+    membership: membership
+      ? {
+          name: membership.planName,
+          freeDeliveryApplied: goldFreeDelivery,
+          endsAt: membership.endsAt,
+        }
+      : undefined,
   };
   return apiSuccess(response, 200, { requestId });
 });

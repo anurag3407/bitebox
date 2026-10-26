@@ -23,7 +23,27 @@ const CreatePlan = z.object({
 export const GET = route(async (req, _ctx, requestId) => {
   const { clusterId } = parseQuery(req, Query);
   const plans = await MealPassRepository.listPlans(clusterId);
-  return apiSuccess({ plans }, 200, { requestId });
+  return apiSuccess(
+    {
+      plans: plans.map((p) => ({
+        id: p.id,
+        name: p.name,
+        skuType: p.sku_type,
+        totalMeals: p.total_meals,
+        pricePaise: p.price_paise,
+        validityDays: p.validity_days,
+        lateSkipFeePaise: p.late_skip_fee_paise,
+        autoScheduleDays: p.auto_schedule_days,
+        slotWindow: p.slot_window,
+        kitchenId: p.kitchen_restaurant_id,
+        kitchenName: p.kitchen_name,
+        kitchenSlug: p.kitchen_slug,
+        clusterId: p.cluster_id,
+      })),
+    },
+    200,
+    { requestId }
+  );
 });
 
 export const POST = route(async (req, _ctx, requestId) => {

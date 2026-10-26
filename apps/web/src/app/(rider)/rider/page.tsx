@@ -2,11 +2,14 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bike, MapPin, Navigation, Store, Wallet } from "lucide-react";
+import { Bike, Camera, ImagePlus, MapPin, Navigation, ShieldCheck, Store, Trophy, Wallet } from "lucide-react";
 import { DeliveryTripStatus } from "@startup/contracts";
 import { PortalHeader, RoleGate } from "@/components/portal/role-gate";
 import { CallButton } from "@/components/support/call-button";
 import { EarningsPanel } from "@/components/payouts/earnings-panel";
+import { OrderChat } from "@/components/orders/order-chat";
+import { RiderVerificationPanel } from "@/components/rider/verification-panel";
+import { RiderRewardsPanel } from "@/components/rider/rewards-panel";
 import { Field, Toggle } from "@/components/ui/field";
 import { Modal } from "@/components/ui/modal";
 import { PageSpinner, Spinner } from "@/components/ui/misc";
@@ -88,10 +91,17 @@ function RiderTrips({ active }: { active: boolean }) {
   const [code, setCode] = useState("");
   const [failOpen, setFailOpen] = useState(false);
   const [failReason, setFailReason] = useState("Customer not reachable");
+  const [proofUploading, setProofUploading] = useState(false);
   const lastOfferId = useRef<string | null>(null);
 
   const trip = useQuery({ queryKey: ["rider-trip"], queryFn: () => api.getRiderActiveTrip(), refetchInterval: 4000, refetchIntervalInBackground: true });
   const online = trip.data?.rider.isOnline ?? false;
+  const activeOrderId = trip.data?.order?.orderId;
+  const proof = useQuery({
+    queryKey: ["delivery-proof", activeOrderId],
+    queryFn: () => api.getOrderProof(activeOrderId!),
+    enabled: !!activeOrderId && !!trip.data?.assignment,
+  });
   // Keeps running while the earnings tab is open: going offline is the only way to stop it
   const gpsError = useLocationBroadcast(online);
 
@@ -127,6 +137,37 @@ function RiderTrips({ active }: { active: boolean }) {
   const step = (next: "AT_PICKUP" | "PICKED_UP" | "AT_DROPOFF" | "COMPLETED", extra: { challengeCode?: string } = {}, ok?: string) =>
     run(() => api.riderUpdateMilestone({ assignmentId: assignment!.id, nextStatus: next, ...extra }), ok);
   const stepIndex = assignment ? TRIP_STEPS.findIndex((s) => s.status.includes(assignment.status as DeliveryTripStatus)) : -1;
+
+  const uploadProof = async (file: File | undefined) => {
+    if (!file || !order) return;
+    if (file.size > 2 * 1024 * 1024) {
+      toast("Photo must be 2 MB or smaller", "error");
+      return;
+    }
+    setProofUploading(true);
+    try {
+      const coords = await new Promise<GeolocationPosition | null>((resolve) =>
+        navigator.geolocation.getCurrentPosition(
+          (pos) => resolve(pos),
+          () => resolve(null),
+          { timeout: 5000, maximumAge: 60_000 }
+        )
+      );
+      const { url } = await api.uploadProofImage(file);
+      await api.saveDeliveryProof(order.orderId, {
+        photoUrl: url,
+        latitude: coords?.coords.latitude,
+        longitude: coords?.coords.longitude,
+        note: order.contactless ? "Contactless delivery — left at door" : "Delivery proof",
+      });
+      await queryClient.invalidateQueries({ queryKey: ["delivery-proof", order.orderId] });
+      toast("Delivery photo saved", "success");
+    } catch (err) {
+      toast(errorMessage(err), "error");
+    } finally {
+      setProofUploading(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -267,13 +308,23 @@ function RiderTrips({ active }: { active: boolean }) {
                   <p className="mt-1.5 text-xl font-semibold tracking-tight text-ink">{order.deliveryAddress.building}</p>
                   <p className="mt-1 text-[15px] text-ink-soft">{order.deliveryAddress.street}</p>
                   {order.deliveryAddress.landmark && <p className="text-sm text-ink-muted">Near {order.deliveryAddress.landmark}</p>}
+                  {order.recipientName && (
+                    <p className="notice notice-neutral mt-4">
+                      Gift order for <strong>{order.recipientName}</strong>. The customer will share the delivery code.
+                    </p>
+                  )}
                   {order.instructions && <p className="notice notice-warn mt-4">{order.instructions}</p>}
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <a href={directionsUrl(order.deliveryAddress)} target="_blank" rel="noreferrer" className="btn btn-outline btn-lg">
                     <Navigation className="h-4 w-4" /> Navigate
                   </a>
-                  <CallButton orderId={order.orderId} target="CUSTOMER" label="Call" className="btn btn-outline btn-lg" />
+                  <CallButton
+                    orderId={order.orderId}
+                    target="CUSTOMER"
+                    label={order.recipientName ? "Call recipient" : "Call"}
+                    className="btn btn-outline btn-lg"
+                  />
                 </div>
               </>
             )}
@@ -286,6 +337,41 @@ function RiderTrips({ active }: { active: boolean }) {
 
             {assignment.status === DeliveryTripStatus.AT_DROPOFF && (
               <div className="space-y-3">
+                {order.paymentMethod === "COD" && (
+                  <p className="notice notice-warn">
+                    Collect <strong>{formatRupees(order.breakdown.payablePaise)}</strong> in cash before handing over the order.
+                  </p>
+                )}
+                {order.contactless && (
+                  <div className="rounded-2xl border border-line p-4">
+                    <p className="flex items-center gap-2 text-sm font-medium text-ink">
+                      <Camera className="h-4 w-4" /> Contactless delivery
+                    </p>
+                    <p className="mt-1 text-xs text-ink-muted">
+                      Leave the order at the door and add a photo. The customer’s OTP still completes the handover.
+                    </p>
+                    {proof.data?.photoUrl ? (
+                      <>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={proof.data.photoUrl} alt="Delivery proof" className="mt-3 h-32 w-full rounded-xl object-cover" />
+                        <p className="mt-2 flex items-center gap-1 text-xs text-success">Photo saved</p>
+                      </>
+                    ) : (
+                      <label className="mt-3 flex h-24 cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-line-strong text-ink-muted hover:border-ink hover:text-ink">
+                        {proofUploading ? <Spinner /> : <ImagePlus className="h-5 w-5" />}
+                        <span className="text-xs">{proofUploading ? "Uploading…" : "Add doorstep photo"}</span>
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp"
+                          capture="environment"
+                          className="sr-only"
+                          disabled={proofUploading}
+                          onChange={(e) => uploadProof(e.target.files?.[0])}
+                        />
+                      </label>
+                    )}
+                  </div>
+                )}
                 <Field label="Customer's delivery code">
                   <input
                     value={code}
@@ -296,7 +382,14 @@ function RiderTrips({ active }: { active: boolean }) {
                     className="input h-16 text-center text-2xl font-semibold tracking-[0.5em]"
                   />
                 </Field>
-                <button disabled={busy || code.length < 4} onClick={() => step("COMPLETED", { challengeCode: code }, "Delivered. Great job!")} className="btn btn-success btn-lg btn-block">
+                {order.contactless && !proof.data?.photoUrl && (
+                  <p className="text-xs text-warn">Add the doorstep photo to enable completion.</p>
+                )}
+                <button
+                  disabled={busy || code.length < 4 || (order.contactless && !proof.data?.photoUrl)}
+                  onClick={() => step("COMPLETED", { challengeCode: code }, "Delivered. Great job!")}
+                  className="btn btn-success btn-lg btn-block"
+                >
                   {busy && <Spinner />} Complete delivery
                 </button>
                 <button onClick={() => setFailOpen(true)} className="btn btn-ghost btn-block text-ink-muted">
@@ -306,6 +399,17 @@ function RiderTrips({ active }: { active: boolean }) {
             )}
           </div>
         </section>
+      )}
+
+      {assignment && order && (
+        <OrderChat
+          orderId={order.orderId}
+          channel="CUSTOMER_RIDER"
+          viewer="RIDER"
+          title="Customer chat"
+          subtitle="Available until you complete the delivery"
+          compact
+        />
       )}
 
       <Modal
@@ -342,9 +446,17 @@ function RiderTrips({ active }: { active: boolean }) {
 
 function RiderShell() {
   const api = useApi();
-  const [tab, setTab] = useState<"trips" | "earnings">(() =>
-    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("tab") === "earnings" ? "earnings" : "trips"
-  );
+  const [tab, setTab] = useState<"trips" | "verification" | "earnings" | "rewards">(() => {
+    const requested = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("tab") : null;
+    return requested === "earnings" || requested === "verification" || requested === "rewards" ? requested : "trips";
+  });
+
+  // A deep link from the header or the offline notice may mount before the router
+  // updates `window.location`; sync once mounted so ?tab=verification opens KYC.
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get("tab");
+    if (requested === "verification" || requested === "earnings" || requested === "rewards") setTab(requested);
+  }, []);
 
   // Browsers only allow the offer chime after a user gesture; unlock on the first tap anywhere
   useEffect(() => {
@@ -359,17 +471,29 @@ function RiderShell() {
       <div className="mx-auto max-w-lg px-5 pt-6">
         {/* Trips stay mounted on the earnings tab so GPS and new-request alerts keep working */}
         <RiderTrips active={tab === "trips"} />
+        {tab === "verification" && <RiderVerificationPanel />}
         {tab === "earnings" && <EarningsPanel queryKey={["rider-earnings"]} load={() => api.getRiderEarnings()} saveAccount={(a) => api.saveRiderPayoutAccount(a)} />}
+        {tab === "rewards" && <RiderRewardsPanel />}
       </div>
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-white/95 pb-safe backdrop-blur-xl" aria-label="Rider sections">
-        <div className="mx-auto grid h-16 max-w-lg grid-cols-2">
+        <div className="mx-auto grid h-16 max-w-lg grid-cols-4">
           {(
             [
               ["trips", "Trips", Bike],
+              ["verification", "KYC", ShieldCheck],
+              ["rewards", "Rewards", Trophy],
               ["earnings", "Earnings", Wallet],
             ] as const
           ).map(([t, label, Icon]) => (
-            <button key={t} onClick={() => setTab(t)} aria-current={tab === t ? "page" : undefined} className={`flex flex-col items-center justify-center gap-1 text-[11px] font-medium ${tab === t ? "text-ink" : "text-ink-muted"}`}>
+            <button
+              key={t}
+              onClick={() => {
+                setTab(t);
+                window.history.replaceState(null, "", `/rider?tab=${t}`);
+              }}
+              aria-current={tab === t ? "page" : undefined}
+              className={`flex flex-col items-center justify-center gap-1 text-[11px] font-medium ${tab === t ? "text-ink" : "text-ink-muted"}`}
+            >
               <Icon className="h-[22px] w-[22px]" strokeWidth={tab === t ? 2.2 : 1.8} />
               {label}
             </button>

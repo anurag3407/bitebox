@@ -15,11 +15,11 @@ export function CartBar() {
   const restaurantName = useCartStore((s) => s.restaurantName);
 
   // Hidden where it would duplicate the page's own call to action
-  if (itemCount === 0 || pathname.startsWith("/checkout") || pathname.startsWith("/orders")) return null;
+  if (itemCount === 0 || pathname.startsWith("/checkout") || pathname.startsWith("/cart") || pathname.startsWith("/orders")) return null;
 
   return (
     <div className="fixed inset-x-4 bottom-[calc(4.75rem+env(safe-area-inset-bottom))] z-40 animate-sheet-up sm:inset-x-auto sm:bottom-8 sm:right-8 sm:w-[380px]">
-      <Link href="/checkout" className="flex items-center justify-between gap-4 rounded-full bg-ink py-2.5 pl-6 pr-2.5 text-white shadow-pop transition-transform hover:scale-[1.01]">
+      <Link href="/cart" className="flex items-center justify-between gap-4 rounded-full bg-ink py-2.5 pl-6 pr-2.5 text-white shadow-pop transition-transform hover:scale-[1.01]">
         <span className="min-w-0">
           <span className="block text-sm font-semibold tabular">
             {itemCount} {itemCount === 1 ? "item" : "items"} · {formatRupees(subtotalPaise)}

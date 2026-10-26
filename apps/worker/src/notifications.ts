@@ -1,5 +1,11 @@
 import { getServerEnv } from "@startup/config";
-import { ClaimedOutboxEvent, PushSubscriptionRepository, UserRepository, getDbPool } from "@startup/database";
+import {
+  ClaimedOutboxEvent,
+  NotificationRepository,
+  PushSubscriptionRepository,
+  UserRepository,
+  getDbPool,
+} from "@startup/database";
 import { BrevoEmailAdapter, Fast2SmsAdapter, PushMessage, WebPushAdapter } from "@startup/integrations";
 import { logger } from "./logger.js";
 
@@ -44,7 +50,7 @@ export class NotificationService {
               COALESCE(o.delivery_address_snapshot->>'contactPhone', a.contact_phone, u.phone) AS contact_phone
          FROM orders o
          JOIN restaurants r ON r.id = o.restaurant_id
-         JOIN customer_addresses a ON a.id = o.delivery_address_id
+         LEFT JOIN customer_addresses a ON a.id = o.delivery_address_id
          JOIN app_users u ON u.id = o.customer_id
         WHERE o.id = $1`,
       [orderId]
@@ -87,6 +93,25 @@ export class NotificationService {
     if (res.rows[0]) await this.pushToUser(res.rows[0].user_id, message);
   }
 
+  /** Push plus a durable in-app notification, deduped by the originating event. */
+  private async notifyCustomer(
+    userId: string,
+    message: PushMessage,
+    kind: string,
+    dedupeKey: string
+  ): Promise<void> {
+    await Promise.all([
+      this.pushToUser(userId, message),
+      NotificationRepository.create(userId, {
+        kind,
+        title: message.title,
+        body: message.body,
+        url: message.url,
+        dedupeKey,
+      }),
+    ]);
+  }
+
   private async smsCustomer(order: OrderContext, message: string): Promise<void> {
     if (!order.contactPhone) return;
     const result = await this.sms.sendSms({ phone: order.contactPhone, message });
@@ -122,12 +147,17 @@ export class NotificationService {
             tag: `merchant-${order.orderId}`,
             requireInteraction: true,
           }),
-          this.pushToUser(order.customerId, {
-            title: "Order placed",
-            body: `Waiting for ${order.restaurantName} to confirm your order.`,
-            url: orderUrl,
-            tag: `order-${order.orderId}`,
-          }),
+          this.notifyCustomer(
+            order.customerId,
+            {
+              title: "Order placed",
+              body: `Waiting for ${order.restaurantName} to confirm your order.`,
+              url: orderUrl,
+              tag: `order-${order.orderId}`,
+            },
+            event.eventType,
+            `${event.eventType}:${order.orderId}`
+          ),
         ]);
         return;
       }
@@ -146,7 +176,12 @@ export class NotificationService {
           "order.out_for_delivery": { title: "On the way", body: "Your order has been picked up. Keep your delivery OTP handy." },
           "order.delivered": { title: "Delivered. Enjoy your meal!", body: "Tap to rate your order." },
         };
-        await this.pushToUser(order.customerId, { ...copy[event.eventType]!, url: orderUrl, tag: `order-${order.orderId}` });
+        await this.notifyCustomer(
+          order.customerId,
+          { ...copy[event.eventType]!, url: orderUrl, tag: `order-${order.orderId}` },
+          event.eventType,
+          `${event.eventType}:${order.orderId}`
+        );
 
         if (event.eventType === "order.delivered") {
           const contact = await UserRepository.getContact(order.customerId);
@@ -170,12 +205,17 @@ export class NotificationService {
         if (!order) return;
         const rider = await getDbPool().query(`SELECT name FROM riders WHERE id = $1`, [p.riderId]);
         await Promise.all([
-          this.pushToUser(order.customerId, {
-            title: "Delivery partner assigned",
-            body: `${rider.rows[0]?.name ?? "Your delivery partner"} will pick up your order.`,
-            url: orderUrl,
-            tag: `order-${order.orderId}`,
-          }),
+          this.notifyCustomer(
+            order.customerId,
+            {
+              title: "Delivery partner assigned",
+              body: `${rider.rows[0]?.name ?? "Your delivery partner"} will pick up your order.`,
+              url: orderUrl,
+              tag: `order-${order.orderId}`,
+            },
+            event.eventType,
+            `${event.eventType}:${order.orderId}`
+          ),
           this.pushToRider(p.riderId, { title: "Trip assigned", body: `Pick up from ${order.restaurantName}.`, url: "/rider", tag: "rider-trip" }),
         ]);
         return;
@@ -197,13 +237,18 @@ export class NotificationService {
       case "rider.arrived_dropoff": {
         const order = await this.loadOrder(orderId);
         if (!order) return;
-        await this.pushToUser(order.customerId, {
-          title: "Your delivery partner has arrived",
-          body: "Share your delivery OTP to collect the order.",
-          url: orderUrl,
-          tag: `order-${order.orderId}`,
-          requireInteraction: true,
-        });
+        await this.notifyCustomer(
+          order.customerId,
+          {
+            title: "Your delivery partner has arrived",
+            body: "Share your delivery OTP to collect the order.",
+            url: orderUrl,
+            tag: `order-${order.orderId}`,
+            requireInteraction: true,
+          },
+          event.eventType,
+          `${event.eventType}:${order.orderId}`
+        );
         return;
       }
 
@@ -214,12 +259,17 @@ export class NotificationService {
         // Refund rows are written in the same transaction, so refunded_paise is already final here
         const refundNote = order.refundedPaise > 0 ? ` A refund of ${rupees(order.refundedPaise)} has been initiated.` : "";
         const wasPaid = p.fromState !== "PENDING_PAYMENT";
-        await this.pushToUser(order.customerId, {
-          title: event.eventType === "order.cancelled" ? "Order cancelled" : "Delivery unsuccessful",
-          body: `${order.orderNumber}: ${p.reason ?? "Your order could not be completed."}${refundNote}`,
-          url: orderUrl,
-          tag: `order-${order.orderId}`,
-        });
+        await this.notifyCustomer(
+          order.customerId,
+          {
+            title: event.eventType === "order.cancelled" ? "Order cancelled" : "Delivery unsuccessful",
+            body: `${order.orderNumber}: ${p.reason ?? "Your order could not be completed."}${refundNote}`,
+            url: orderUrl,
+            tag: `order-${order.orderId}`,
+          },
+          event.eventType,
+          `${event.eventType}:${order.orderId}`
+        );
         if (wasPaid) {
           await this.smsCustomer(order, `Your order ${order.orderNumber} was cancelled.${refundNote}`);
           await this.pushToRestaurantStaff(order.restaurantId, {
@@ -235,22 +285,140 @@ export class NotificationService {
       case "refund.processed": {
         const order = await this.loadOrder(orderId);
         if (!order) return;
-        await this.pushToUser(order.customerId, {
-          title: "Refund processed",
-          body: `${rupees(Number(p.amountPaise))} for ${order.orderNumber} is on its way to your account (5-7 working days).`,
-          url: orderUrl,
-          tag: `refund-${p.refundId}`,
-        });
+        await this.notifyCustomer(
+          order.customerId,
+          {
+            title: "Refund processed",
+            body: `${rupees(Number(p.amountPaise))} for ${order.orderNumber} is on its way to your account (5-7 working days).`,
+            url: orderUrl,
+            tag: `refund-${p.refundId}`,
+          },
+          event.eventType,
+          `${event.eventType}:${p.refundId}`
+        );
         return;
       }
 
       case "support.agent_replied":
-        await this.pushToUser(String(p.customerId), {
-          title: "Support replied",
-          body: String(p.preview ?? "You have a new message from support"),
-          url: `/support/${p.ticketId}`,
-          tag: `support-${p.ticketId}`,
-        });
+        await this.notifyCustomer(
+          String(p.customerId),
+          {
+            title: "Support replied",
+            body: String(p.preview ?? "You have a new message from support"),
+            url: `/support/${p.ticketId}`,
+            tag: `support-${p.ticketId}`,
+          },
+          event.eventType,
+          `support.agent_replied:${p.ticketId}`
+        );
+        return;
+
+      case "referral.rewarded": {
+        const reward = rupees(Number(p.referrerRewardPaise ?? 0));
+        const welcome = rupees(Number(p.refereeRewardPaise ?? 0));
+        await Promise.all([
+          this.notifyCustomer(
+            String(p.referrerUserId),
+            {
+              title: "Referral reward unlocked",
+              body: `${reward} credits added — your friend's first order was delivered.`,
+              url: "/account?tab=wallet",
+              tag: `referral-${p.referralId}`,
+            },
+            event.eventType,
+            `referral.rewarded:${p.referralId}:referrer`
+          ),
+          this.notifyCustomer(
+            String(p.refereeUserId),
+            {
+              title: "Welcome reward unlocked",
+              body: `${welcome} credits added for your first delivered order.`,
+              url: "/account?tab=wallet",
+              tag: `referral-${p.referralId}`,
+            },
+            event.eventType,
+            `referral.rewarded:${p.referralId}:referee`
+          ),
+        ]);
+        return;
+      }
+
+      case "membership.granted":
+        await this.notifyCustomer(
+          String(p.userId),
+          {
+            title: "BiteBox Gold unlocked",
+            body: "You now get free delivery on orders over ₹199 and priority support for 30 days.",
+            url: "/account?tab=gold",
+            tag: "membership-gold",
+          },
+          event.eventType,
+          `membership.granted:${p.membershipId}`
+        );
+        return;
+
+      case "loyalty.cashback":
+        await this.notifyCustomer(
+          String(p.userId),
+          {
+            title: "2% back in credits",
+            body: `${rupees(Number(p.cashbackPaise ?? 0))} added to your BiteBox Credits.`,
+            url: "/account?tab=wallet",
+            tag: `cashback-${p.orderId}`,
+          },
+          event.eventType,
+          `loyalty.cashback:${p.orderId}`
+        );
+        return;
+
+      case "order.issue.resolved": {
+        const credit = Number(p.walletCreditPaise ?? 0);
+        const refund = Number(p.refundAmountPaise ?? 0);
+        await this.notifyCustomer(
+          String(p.customerId),
+          {
+            title: "Problem resolved",
+            body:
+              credit > 0
+                ? `${rupees(credit)} in credits added to your wallet.`
+                : refund > 0
+                  ? `A refund of ${rupees(refund)} is being processed.`
+                  : "Our team has closed your problem report.",
+            url: `/orders/${p.orderId}`,
+            tag: `issue-${p.issueId}`,
+          },
+          event.eventType,
+          `order.issue.resolved:${p.issueId}`
+        );
+        return;
+      }
+
+      case "order.issue.opened":
+        await this.notifyCustomer(
+          String(p.customerId),
+          {
+            title: "We're reviewing your report",
+            body: "Our support team has opened a priority conversation and will reply shortly.",
+            url: `/orders/${p.orderId}`,
+            tag: `issue-${p.issueId}`,
+          },
+          event.eventType,
+          `order.issue.opened:${p.issueId}`
+        );
+        return;
+
+      case "dining.reservation_created":
+        await this.notifyCustomer(
+          String(p.customerId),
+          {
+            title: "Table confirmed",
+            body: `${p.date} at ${p.slot} for ${p.partySize} guests.`,
+            url: "/account?tab=dining",
+            tag: `dining-${p.reservationId}`,
+          },
+          event.eventType,
+          `dining.reservation_created:${p.reservationId}`
+        );
         return;
 
       case "payout.paid": {

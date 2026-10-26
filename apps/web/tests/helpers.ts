@@ -88,9 +88,13 @@ export async function createMerchantStaff(restaurantId: string = SEED_IDS.restau
 export async function createRider(at = { latitude: 28.6326, longitude: 77.2195 }) {
   const user = await createUser("RIDER");
   const res = await getDbPool().query(
-    `INSERT INTO riders (user_id, name, phone, is_approved, is_online, current_latitude, current_longitude, last_ping_at)
-     VALUES ($1, 'Test Rider', '+919800000000', true, true, $2, $3, NOW()) RETURNING id`,
+    `INSERT INTO riders (user_id, name, phone, is_approved, is_online, current_latitude, current_longitude, last_ping_at, verification_status)
+     VALUES ($1, 'Test Rider', '+919800000000', true, true, $2, $3, NOW(), 'VERIFIED') RETURNING id`,
     [user.userId, at.latitude, at.longitude]
+  );
+  await getDbPool().query(
+    `INSERT INTO rider_verifications (rider_id, status, verified_at) VALUES ($1, 'VERIFIED', NOW()) ON CONFLICT DO NOTHING`,
+    [res.rows[0].id]
   );
   return { ...user, riderId: res.rows[0].id as string };
 }
@@ -141,10 +145,16 @@ export const MENU = {
  * Drives an order from checkout to DELIVERED through the real repositories
  * (no HTTP), for tests that only care about what happens after delivery.
  */
-export async function deliverOrder(options: { restaurantId?: string; rider?: Awaited<ReturnType<typeof createRider>> } = {}) {
+export async function deliverOrder(
+  options: {
+    restaurantId?: string;
+    rider?: Awaited<ReturnType<typeof createRider>>;
+    customer?: Awaited<ReturnType<typeof createCustomerWithAddress>>;
+  } = {}
+) {
   const { OrderRepository, RiderRepository } = await import("@startup/database");
   const { FulfillmentState, DeliveryTripStatus } = await import("@startup/contracts");
-  const customer = await createCustomerWithAddress();
+  const customer = options.customer ?? (await createCustomerWithAddress());
   const rider = options.rider ?? (await createRider());
   const breakdown = {
     subtotalPaise: 56000,

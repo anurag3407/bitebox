@@ -1,5 +1,6 @@
 import type { PoolClient } from "pg";
 import type { CouponDiscountRule } from "@startup/core";
+import { DomainError } from "@startup/core";
 import { getDbPool } from "../client.js";
 
 type Queryable = Pick<PoolClient, "query">;
@@ -18,6 +19,7 @@ export interface CouponRecord {
   usageLimitTotal: number | null;
   usageLimitPerUser: number | null;
   firstOrderOnly: boolean;
+  fundedBy: "PLATFORM" | "MERCHANT";
   restaurantId: string | null;
 }
 
@@ -38,6 +40,7 @@ function mapCoupon(r: any): CouponRecord {
     usageLimitTotal: r.usage_limit_total,
     usageLimitPerUser: r.usage_limit_per_user,
     firstOrderOnly: r.first_order_only,
+    fundedBy: (r.funded_by ?? "PLATFORM") as "PLATFORM" | "MERCHANT",
     restaurantId: r.restaurant_id,
   };
 }
@@ -134,6 +137,90 @@ export class CouponRepository {
         WHERE order_id = $1 AND status <> 'RELEASED'`,
       [orderId]
     );
+  }
+
+  /** Merchant console: every coupon scoped to this outlet plus redemption counts. */
+  static async listForRestaurant(restaurantId: string) {
+    const res = await getDbPool().query(
+      `SELECT c.*,
+              COUNT(cr.id) FILTER (WHERE cr.status = 'REDEEMED')::int AS redeemed_count,
+              COUNT(cr.id) FILTER (WHERE cr.status = 'RESERVED')::int AS reserved_count,
+              COALESCE(SUM(cr.discount_paise) FILTER (WHERE cr.status = 'REDEEMED' AND c.funded_by = 'MERCHANT'), 0)::int AS funded_spend_paise,
+              COUNT(DISTINCT o.id) FILTER (WHERE o.fulfillment_state = 'DELIVERED')::int AS attributed_orders,
+              COALESCE(SUM((o.breakdown_json->>'subtotalPaise')::int) FILTER (WHERE o.fulfillment_state = 'DELIVERED'), 0)::int AS attributed_revenue_paise
+         FROM coupons c
+         LEFT JOIN coupon_redemptions cr ON cr.coupon_id = c.id
+         LEFT JOIN orders o ON o.id = cr.order_id
+        WHERE c.restaurant_id = $1
+        GROUP BY c.id
+        ORDER BY c.created_at DESC`,
+      [restaurantId]
+    );
+    return res.rows.map((r) => ({
+      ...mapCoupon(r),
+      redeemedCount: r.redeemed_count as number,
+      reservedCount: r.reserved_count as number,
+      fundedSpendPaise: Number(r.funded_spend_paise ?? 0),
+      attributedOrders: Number(r.attributed_orders ?? 0),
+      attributedRevenuePaise: Number(r.attributed_revenue_paise ?? 0),
+      createdAt: (r.created_at as Date).toISOString(),
+    }));
+  }
+
+  static async createForRestaurant(
+    restaurantId: string,
+    input: {
+      code: string;
+      type: CouponDiscountRule["type"];
+      discountValue: number;
+      maxDiscountPaise?: number;
+      minOrderPaise: number;
+      description?: string;
+      validFrom?: string;
+      validUntil?: string;
+      usageLimitTotal?: number;
+      usageLimitPerUser?: number;
+      firstOrderOnly: boolean;
+    }
+  ): Promise<CouponRecord> {
+    try {
+      const res = await getDbPool().query(
+        `INSERT INTO coupons
+           (code, type, discount_value, max_discount_paise, min_order_paise, is_active, description,
+            valid_from, valid_until, usage_limit_total, usage_limit_per_user, first_order_only, restaurant_id, funded_by)
+         VALUES ($1, $2, $3, $4, $5, true, $6, $7, $8, $9, $10, $11, $12, 'MERCHANT')
+         RETURNING *`,
+        [
+          normalizeCouponCode(input.code),
+          input.type,
+          input.discountValue,
+          input.type === "PERCENTAGE" ? input.maxDiscountPaise ?? null : null,
+          input.minOrderPaise,
+          input.description ?? null,
+          input.validFrom ?? null,
+          input.validUntil ?? null,
+          input.usageLimitTotal ?? null,
+          input.usageLimitPerUser ?? null,
+          input.firstOrderOnly,
+          restaurantId,
+        ]
+      );
+      return mapCoupon(res.rows[0]);
+    } catch (err) {
+      if ((err as { code?: string }).code === "23505") {
+        throw new DomainError("CONFLICT", "A coupon with this code already exists. Try another code.");
+      }
+      throw err;
+    }
+  }
+
+  static async setRestaurantCouponActive(restaurantId: string, couponId: string, isActive: boolean): Promise<CouponRecord> {
+    const res = await getDbPool().query(
+      `UPDATE coupons SET is_active = $3 WHERE id = $1 AND restaurant_id = $2 RETURNING *`,
+      [couponId, restaurantId, isActive]
+    );
+    if (!res.rows[0]) throw new DomainError("NOT_FOUND", "Coupon not found");
+    return mapCoupon(res.rows[0]);
   }
 
   /** Publicly visible offers for the checkout "available coupons" list. */

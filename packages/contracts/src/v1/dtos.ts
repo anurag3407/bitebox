@@ -5,6 +5,8 @@ import {
   DietaryTag,
   FaultCode,
   FulfillmentState,
+  OrderMode,
+  PaymentMethod,
   PaymentStatus,
   RefundStatus,
   StockPolicy,
@@ -63,6 +65,14 @@ export const ItemVariantDtoSchema = z.object({
 });
 export type ItemVariantDto = z.infer<typeof ItemVariantDtoSchema>;
 
+export const NutritionSchema = z.object({
+  calories: z.number().int().min(0).max(5000).optional(),
+  proteinG: z.number().min(0).max(500).optional(),
+  carbsG: z.number().min(0).max(500).optional(),
+  fatG: z.number().min(0).max(500).optional(),
+});
+export type Nutrition = z.infer<typeof NutritionSchema>;
+
 export const MenuItemDtoSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1),
@@ -73,6 +83,10 @@ export const MenuItemDtoSchema = z.object({
   isAvailable: z.boolean(),
   imageUrl: z.string().url().optional().or(z.string()),
   isBestseller: z.boolean().optional(),
+  allergens: z.array(z.string()).default([]),
+  nutrition: NutritionSchema.optional(),
+  spiceLevel: z.number().int().min(0).max(3).optional(),
+  serves: z.number().int().min(1).max(20).optional(),
   variants: z.array(ItemVariantDtoSchema).default([]),
   modifierGroups: z.array(ModifierGroupDtoSchema).default([]),
 });
@@ -107,6 +121,8 @@ export const RestaurantSummaryDtoSchema = z.object({
   // Human readable reopening hint when closed, e.g. "Opens at 11:00 AM"
   nextOpenText: z.string().optional(),
   isFavorite: z.boolean().optional(),
+  isSponsored: z.boolean().optional(),
+  hygieneRating: z.number().int().min(1).max(5).optional(),
 });
 export type RestaurantSummaryDto = z.infer<typeof RestaurantSummaryDtoSchema>;
 
@@ -144,6 +160,8 @@ export const RestaurantDetailDtoSchema = RestaurantSummaryDtoSchema.extend({
   latitude: z.number().optional(),
   longitude: z.number().optional(),
   openingHours: OpeningHoursSchema.optional(),
+  amenities: z.array(z.string()).default([]),
+  gallery: z.array(z.string()).default([]),
   categories: z.array(MenuCategoryDtoSchema),
 });
 export type RestaurantDetailDto = z.infer<typeof RestaurantDetailDtoSchema>;
@@ -233,11 +251,22 @@ export const CreateQuoteRequestSchema = z
     tipPaise: z.number().int().min(0).max(MAX_TIP_PAISE).default(0),
     dropPointId: z.string().uuid().optional(),
     slotWindow: z.string().regex(/^\d{2}:\d{2}-\d{2}:\d{2}$/).optional(),
+    orderMode: z.nativeEnum(OrderMode).default(OrderMode.DELIVERY),
+    // ISO timestamp for a scheduled delivery; must be in the future and within 7 days
+    scheduledFor: z.string().datetime({ offset: true }).optional(),
+    contactless: z.boolean().default(false),
+    cutleryOptIn: z.boolean().default(true),
+    deliveryPreference: z.enum(["DOOR", "RECEPTION", "SECURITY", "HAND_ME"]).optional(),
   })
-  .refine((v) => v.deliveryAddressId || v.destinationLocation, {
+  .refine((v) => v.orderMode === OrderMode.PICKUP || v.deliveryAddressId || v.destinationLocation, {
     message: "A delivery address or location is required to price the order",
     path: ["deliveryAddressId"],
-  });
+  })
+  .refine((v) => {
+    if (!v.scheduledFor) return true;
+    const at = new Date(v.scheduledFor).getTime();
+    return at > Date.now() + 15 * 60 * 1000 && at < Date.now() + 7 * 24 * 60 * 60 * 1000;
+  }, { message: "Schedule the order at least 15 minutes ahead, within the next 7 days", path: ["scheduledFor"] });
 export type CreateQuoteRequest = z.infer<typeof CreateQuoteRequestSchema>;
 export type CreateQuoteRequestInput = z.input<typeof CreateQuoteRequestSchema>;
 
@@ -282,26 +311,42 @@ export const QuoteResponseSchema = z.object({
   appliedCouponCode: z.string().optional(),
   // Set when a coupon was supplied but could not be applied; the quote is still valid without it
   couponError: z.string().optional(),
+  membership: z
+    .object({ name: z.string(), freeDeliveryApplied: z.boolean(), endsAt: z.string() })
+    .optional(),
 });
 export type QuoteResponse = z.infer<typeof QuoteResponseSchema>;
 
 // Checkout & Order
-export const CreateCheckoutRequestSchema = z.object({
-  quoteId: z.string().uuid(),
-  deliveryAddressId: z.string().uuid(),
-  instructions: z.string().trim().max(300).optional(),
-  idempotencyKey: z.string().min(10).max(100),
-});
+export const CreateCheckoutRequestSchema = z
+  .object({
+    quoteId: z.string().uuid(),
+    // Delivery orders require an address; pickup orders must omit it
+    deliveryAddressId: z.string().uuid().optional(),
+    instructions: z.string().trim().max(300).optional(),
+    idempotencyKey: z.string().min(10).max(100),
+    paymentMethod: z.nativeEnum(PaymentMethod).optional(),
+    recipientName: z.string().trim().min(2).max(60).optional(),
+    recipientPhone: IndianPhoneSchema.optional(),
+    giftMessage: z.string().trim().max(200).optional(),
+  })
+  .refine((v) => !!v.recipientName === !!v.recipientPhone, {
+    message: "Add both the recipient's name and mobile number",
+    path: ["recipientName"],
+  });
 
 export const CheckoutResponseSchema = z.object({
   orderId: z.string().uuid(),
   orderNumber: z.string(),
-  paymentAttemptId: z.string().uuid(),
-  razorpayOrderId: z.string(),
-  razorpayKeyId: z.string(),
+  // Absent for wallet / cash-on-delivery orders, which never create a gateway attempt
+  paymentAttemptId: z.string().uuid().optional(),
+  razorpayOrderId: z.string().optional(),
+  razorpayKeyId: z.string().optional(),
   amountPaise: z.number().int().positive(),
   currency: z.literal("INR"),
   isDuplicate: z.boolean(),
+  paymentMethod: z.nativeEnum(PaymentMethod).optional(),
+  paymentStatus: z.nativeEnum(PaymentStatus).optional(),
   // True when the server runs without real Razorpay credentials (local/dev only)
   simulatedPayment: z.boolean(),
 });
@@ -357,6 +402,19 @@ export const OrderDetailDtoSchema = z.object({
   pickupCode: z.string().optional(),
   instructions: z.string().optional(),
   couponCode: z.string().optional(),
+  orderMode: z.nativeEnum(OrderMode).optional(),
+  scheduledFor: z.string().optional(),
+  contactless: z.boolean().optional(),
+  cutleryOptIn: z.boolean().optional(),
+  deliveryPreference: z.string().optional(),
+  paymentMethod: z.nativeEnum(PaymentMethod).optional(),
+  deliveryProofUrl: z.string().optional(),
+  pickupVerifiedAt: z.string().optional(),
+  recipientName: z.string().optional(),
+  recipientPhone: z.string().optional(),
+  giftMessage: z.string().optional(),
+  tipPaise: z.number().int().nonnegative().optional(),
+  tipCreatedAt: z.string().optional(),
   prepTimeMinutes: z.number().int().positive().optional(),
   cancellationReason: z.string().optional(),
   acceptedAt: z.string().optional(),
@@ -536,6 +594,11 @@ export const CreateOrderRatingRequestSchema = z.object({
   foodRating: z.number().int().min(1).max(5),
   deliveryRating: z.number().int().min(1).max(5).optional(),
   comment: z.string().trim().max(500).optional(),
+  photos: z.array(z.string().url().max(1000)).max(3).optional(),
+  dishRatings: z
+    .array(z.object({ menuItemId: z.string().uuid(), rating: z.number().int().min(1).max(5) }))
+    .max(30)
+    .optional(),
 });
 export type CreateOrderRatingRequest = z.infer<typeof CreateOrderRatingRequestSchema>;
 
@@ -544,6 +607,10 @@ export const RestaurantReviewDtoSchema = z.object({
   customerName: z.string(),
   foodRating: z.number().int().min(1).max(5),
   comment: z.string().optional(),
+  photos: z.array(z.string()).default([]),
+  dishRatings: z.array(z.object({ menuItemId: z.string().uuid(), name: z.string(), rating: z.number().int().min(1).max(5) })).default([]),
+  restaurantReply: z.string().optional(),
+  restaurantRepliedAt: z.string().optional(),
   createdAt: z.string(),
 });
 export type RestaurantReviewDto = z.infer<typeof RestaurantReviewDtoSchema>;
@@ -564,3 +631,154 @@ export const UpdateProfileRequestSchema = z.object({
   phone: z.string().regex(/^\+[1-9]\d{7,14}$/, "Phone must be in E.164 format (e.g. +919876543210)").optional(),
 });
 export type UpdateProfileRequest = z.infer<typeof UpdateProfileRequestSchema>;
+
+// Group ordering
+export const GroupCartStatusSchema = z.enum(["OPEN", "LOCKED", "COMPLETED", "ABANDONED"]);
+export type GroupCartStatus = z.infer<typeof GroupCartStatusSchema>;
+
+export const GroupCartOptionDtoSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  pricePaise: z.number().int().nonnegative(),
+});
+export type GroupCartOptionDto = z.infer<typeof GroupCartOptionDtoSchema>;
+
+export const GroupCartLineDtoSchema = z.object({
+  id: z.string().uuid(),
+  participantId: z.string().uuid(),
+  participantName: z.string(),
+  menuItemId: z.string().uuid(),
+  name: z.string(),
+  variantId: z.string().uuid().optional(),
+  variantName: z.string().optional(),
+  basePricePaise: z.number().int().nonnegative(),
+  selectedOptions: z.array(GroupCartOptionDtoSchema).default([]),
+  unitPricePaise: z.number().int().nonnegative(),
+  quantity: z.number().int().positive(),
+  lineTotalPaise: z.number().int().nonnegative(),
+  notes: z.string().optional(),
+  imageUrl: z.string().optional(),
+  isVeg: z.boolean(),
+  canEdit: z.boolean(),
+});
+export type GroupCartLineDto = z.infer<typeof GroupCartLineDtoSchema>;
+
+export const GroupCartParticipantDtoSchema = z.object({
+  userId: z.string().uuid(),
+  name: z.string(),
+  isHost: z.boolean(),
+  itemCount: z.number().int().nonnegative(),
+  subtotalPaise: z.number().int().nonnegative(),
+});
+export type GroupCartParticipantDto = z.infer<typeof GroupCartParticipantDtoSchema>;
+
+export const GroupCartDtoSchema = z.object({
+  id: z.string().uuid(),
+  code: z.string(),
+  status: GroupCartStatusSchema,
+  restaurantId: z.string().uuid(),
+  restaurantName: z.string(),
+  restaurantSlug: z.string(),
+  hostId: z.string().uuid(),
+  hostName: z.string(),
+  viewerId: z.string().uuid(),
+  orderId: z.string().uuid().optional(),
+  expiresAt: z.string(),
+  createdAt: z.string(),
+  isHost: z.boolean(),
+  isParticipant: z.boolean(),
+  participants: z.array(GroupCartParticipantDtoSchema),
+  lines: z.array(GroupCartLineDtoSchema),
+  participantCount: z.number().int().positive(),
+  itemCount: z.number().int().nonnegative(),
+  subtotalPaise: z.number().int().nonnegative(),
+});
+export type GroupCartDto = z.infer<typeof GroupCartDtoSchema>;
+
+export const CreateGroupCartRequestSchema = z.object({
+  restaurantId: z.string().uuid(),
+});
+export type CreateGroupCartRequest = z.infer<typeof CreateGroupCartRequestSchema>;
+
+export const AddGroupCartItemRequestSchema = z.object({
+  menuItemId: z.string().uuid(),
+  variantId: z.string().uuid().optional(),
+  selectedOptionIds: z.array(z.string().uuid()).max(20).default([]),
+  quantity: z.number().int().min(1).max(20),
+  notes: z.string().trim().max(200).optional(),
+});
+export type AddGroupCartItemRequest = z.infer<typeof AddGroupCartItemRequestSchema>;
+
+export const UpdateGroupCartItemRequestSchema = z.object({
+  quantity: z.number().int().min(0).max(20),
+});
+export type UpdateGroupCartItemRequest = z.infer<typeof UpdateGroupCartItemRequestSchema>;
+
+export const CompleteGroupCartRequestSchema = z.object({
+  orderId: z.string().uuid(),
+});
+export type CompleteGroupCartRequest = z.infer<typeof CompleteGroupCartRequestSchema>;
+
+// Dining events / Zomato Live
+export const DiningEventCategorySchema = z.enum(["DINING", "MUSIC", "COMEDY", "WORKSHOP"]);
+export type DiningEventCategory = z.infer<typeof DiningEventCategorySchema>;
+
+export const DiningEventDtoSchema = z.object({
+  id: z.string().uuid(),
+  restaurantId: z.string().uuid(),
+  restaurantName: z.string(),
+  restaurantSlug: z.string(),
+  title: z.string(),
+  description: z.string().optional(),
+  imageUrl: z.string().optional(),
+  category: DiningEventCategorySchema,
+  startsAt: z.string(),
+  endsAt: z.string(),
+  pricePaise: z.number().int().nonnegative(),
+  capacity: z.number().int().positive(),
+  bookedCount: z.number().int().nonnegative(),
+  seatsLeft: z.number().int().nonnegative(),
+  venue: z.string(),
+  isActive: z.boolean(),
+});
+export type DiningEventDto = z.infer<typeof DiningEventDtoSchema>;
+
+export const DiningEventBookingDtoSchema = z.object({
+  id: z.string().uuid(),
+  eventId: z.string().uuid(),
+  eventTitle: z.string(),
+  restaurantName: z.string(),
+  restaurantSlug: z.string(),
+  imageUrl: z.string().optional(),
+  startsAt: z.string(),
+  venue: z.string(),
+  quantity: z.number().int().positive(),
+  totalPaise: z.number().int().nonnegative(),
+  status: z.enum(["CONFIRMED", "CANCELLED"]),
+  bookingCode: z.string(),
+  canCancel: z.boolean(),
+  createdAt: z.string(),
+});
+export type DiningEventBookingDto = z.infer<typeof DiningEventBookingDtoSchema>;
+
+export const BookDiningEventRequestSchema = z.object({
+  quantity: z.number().int().min(1).max(6),
+});
+export type BookDiningEventRequest = z.infer<typeof BookDiningEventRequestSchema>;
+
+// Curated collections
+export const CollectionSummaryDtoSchema = z.object({
+  id: z.string().uuid(),
+  slug: z.string(),
+  title: z.string(),
+  subtitle: z.string().optional(),
+  imageUrl: z.string().optional(),
+  restaurantCount: z.number().int().nonnegative(),
+});
+export type CollectionSummaryDto = z.infer<typeof CollectionSummaryDtoSchema>;
+
+export const CollectionDetailDtoSchema = CollectionSummaryDtoSchema.extend({
+  description: z.string().optional(),
+  restaurants: z.array(RestaurantSummaryDtoSchema),
+});
+export type CollectionDetailDto = z.infer<typeof CollectionDetailDtoSchema>;

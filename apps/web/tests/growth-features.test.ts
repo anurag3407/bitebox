@@ -13,6 +13,7 @@ import {
   RefundRepository,
   SEED_IDS,
   SurplusRepository,
+  WalletRepository,
   getDbPool,
   withTransaction,
 } from "@startup/database";
@@ -149,7 +150,18 @@ describe("Growth feature integration", () => {
   });
 
   it("generates pass deliveries and applies early vs late skip rules", async () => {
+    await withTransaction((client) =>
+      WalletRepository.creditWithClient(client, {
+        userId: customer.userId,
+        kind: "ADMIN_ADJUSTMENT",
+        amountPaise: 600000,
+        referenceType: "TEST",
+        referenceId: `meal-pass-credits:${randomUUID()}`,
+        description: "Test meal pass credits",
+      })
+    );
     const date = nextMonday();
+    const dateIso = date.toISOString().slice(0, 10);
     const plan = await MealPassRepository.createPlan({
       kitchenRestaurantId: SEED_IDS.restaurant1Id,
       name: `Test Lunch ${randomUUID().slice(0, 6)}`,
@@ -163,7 +175,9 @@ describe("Growth feature integration", () => {
     const earlyPass = await MealPassRepository.purchasePass({ userId: customer.userId, planId: plan.id });
     await MealPassRepository.generateDailyDeliveries(date);
     const deliveries = await MealPassRepository.listDeliveries(customer.userId);
-    const earlyDelivery = deliveries.find((d: any) => d.pass_id === earlyPass.pass.id);
+    const earlyDelivery = deliveries.find(
+      (d: any) => d.pass_id === earlyPass.pass.id && String(d.delivery_date_text ?? d.delivery_date).slice(0, 10) === dateIso
+    );
     expect(earlyDelivery).toBeTruthy();
     const early = await MealPassRepository.skipDelivery({
       deliveryId: earlyDelivery.id,
@@ -175,7 +189,9 @@ describe("Growth feature integration", () => {
     const latePass = await MealPassRepository.purchasePass({ userId: customer.userId, planId: plan.id });
     await MealPassRepository.generateDailyDeliveries(date);
     const allDeliveries = await MealPassRepository.listDeliveries(customer.userId);
-    const lateDelivery = allDeliveries.find((d: any) => d.pass_id === latePass.pass.id);
+    const lateDelivery = allDeliveries.find(
+      (d: any) => d.pass_id === latePass.pass.id && String(d.delivery_date_text ?? d.delivery_date).slice(0, 10) === dateIso
+    );
     const late = await MealPassRepository.skipDelivery({
       deliveryId: lateDelivery.id,
       userId: customer.userId,
@@ -189,6 +205,16 @@ describe("Growth feature integration", () => {
   });
 
   it("appends a one-tap add-on to the parent crate without delivery or platform fees", async () => {
+    await withTransaction((client) =>
+      WalletRepository.creditWithClient(client, {
+        userId: customer.userId,
+        kind: "ADMIN_ADJUSTMENT",
+        amountPaise: 10000,
+        referenceType: "TEST",
+        referenceId: `addon-credits:${randomUUID()}`,
+        description: "Test add-on credits",
+      })
+    );
     const parent = await createUnpaidOrder(customer);
     await getDbPool().query(`UPDATE orders SET slot_cutoff_at = NOW() + interval '1 hour' WHERE id = $1`, [parent.orderId]);
     const sku = await AddonRepository.createSku({
@@ -208,6 +234,11 @@ describe("Growth feature integration", () => {
     expect(result.order.breakdown_json.deliveryFeePaise).toBe(0);
     expect(result.order.breakdown_json.platformFeePaise).toBe(0);
     expect(result.order.addon_gross_margin_paise).toBe(1700);
+    expect(result.order.payment_method).toBe("WALLET");
+    const txn = await getDbPool().query(`SELECT kind, amount_paise FROM wallet_transactions WHERE reference_id = $1`, [result.order.id]);
+    expect(txn.rows[0]).toMatchObject({ kind: "ORDER_PAYMENT", amount_paise: result.price.payablePaise });
+    const payment = await getDbPool().query(`SELECT provider_payment_id FROM payments WHERE order_id = $1`, [result.order.id]);
+    expect(payment.rows[0].provider_payment_id).toBe(`wallet:${result.order.id}`);
     const stock = await getDbPool().query(`SELECT stock_count FROM addon_skus WHERE id = $1`, [sku.id]);
     expect(stock.rows[0].stock_count).toBe(4);
   });
@@ -294,14 +325,25 @@ describe("Growth feature integration", () => {
       pickupWindowStart: new Date(Date.now() - 10 * 60 * 1000),
       pickupWindowEnd: new Date(Date.now() + 60 * 60 * 1000),
     });
+    await withTransaction((client) =>
+      WalletRepository.creditWithClient(client, {
+        userId: customer.userId,
+        kind: "ADMIN_ADJUSTMENT",
+        amountPaise: 100_000,
+        referenceType: "TEST",
+        referenceId: `surplus:${randomUUID()}`,
+        description: "Test credits for rescue bag",
+      })
+    );
     const purchase = await SurplusRepository.purchaseListing({
       listingId: purchaseListing.listing.id,
       userId: customer.userId,
-      addressId: customer.addressId,
     });
     expect(purchase.order.order_type).toBe("SURPLUS");
     expect(purchase.order.payable_paise).toBe(purchaseListing.priced.salePricePaise);
     expect(purchase.order.acquisition_channel).toBe("SURPLUS_BAG");
+    expect(purchase.order.order_mode).toBe("PICKUP");
+    expect(purchase.order.fulfillment_state).toBe("READY_FOR_PICKUP");
 
     const campaign = await SurplusRepository.createCampaign({
       brandName: "Acme Snacks",
@@ -357,6 +399,17 @@ describe("Growth feature integration", () => {
     });
     expect(split.split).toMatchObject({ coveredPaise: 13000, overagePaise: 7000, employeePayablePaise: 7000 });
 
+    await withTransaction((client) =>
+      WalletRepository.creditWithClient(client, {
+        userId: customer.userId,
+        kind: "ADMIN_ADJUSTMENT",
+        amountPaise: 100000,
+        referenceType: "TEST",
+        referenceId: `corporate-credits:${randomUUID()}`,
+        description: "Test corporate overage credits",
+      })
+    );
+
     const quote = await call(createQuote, "POST", "/q", {
       token: customer.token,
       body: {
@@ -375,6 +428,32 @@ describe("Growth feature integration", () => {
     expect(corporateOrder.order.corporate_covered_paise).toBe(13000);
     expect(corporateOrder.order.corporate_overage_paise).toBeGreaterThan(0);
     expect(corporateOrder.split.employeePayablePaise).toBe(corporateOrder.order.payable_paise);
+    expect(corporateOrder.order.payment_method).toBe("WALLET");
+
+    const walletTxn = await getDbPool().query(
+      `SELECT kind, direction, amount_paise FROM wallet_transactions WHERE reference_id = $1`,
+      [corporateOrder.order.id]
+    );
+    expect(walletTxn.rows[0]).toMatchObject({
+      kind: "ORDER_PAYMENT",
+      direction: "DEBIT",
+      amount_paise: corporateOrder.split.employeePayablePaise,
+    });
+    const payment = await getDbPool().query(`SELECT provider_payment_id FROM payments WHERE order_id = $1`, [corporateOrder.order.id]);
+    expect(payment.rows[0].provider_payment_id).toBe(`wallet:${corporateOrder.order.id}`);
+    const ledger = await getDbPool().query(
+      `SELECT le.account, COALESCE(SUM(le.debit_paise), 0)::int AS debit
+         FROM ledger_entries le JOIN ledger_transactions lt ON lt.id = le.transaction_id
+        WHERE lt.order_id = $1 AND le.account IN ('WALLET_LIABILITY', 'CORPORATE_RECEIVABLE')
+        GROUP BY le.account`,
+      [corporateOrder.order.id]
+    );
+    expect(ledger.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ account: "CORPORATE_RECEIVABLE", debit: 13000 }),
+        expect.objectContaining({ account: "WALLET_LIABILITY", debit: corporateOrder.split.employeePayablePaise }),
+      ])
+    );
 
     const invoice = await CorporateRepository.generateMonthlyInvoice({ corporateAccountId: account.id });
     expect(invoice.total_paise).toBeGreaterThan(0);

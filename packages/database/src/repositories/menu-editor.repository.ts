@@ -16,6 +16,9 @@ export interface EditableMenu {
     heroImageUrl: string | null;
     isOpen: boolean;
     openingHours: RestaurantSettings["openingHours"];
+    amenities: string[];
+    gallery: string[];
+    hygieneRating: number | null;
   };
   categories: Array<{
     id: string;
@@ -73,6 +76,9 @@ export class MenuEditorRepository {
         heroImageUrl: r.hero_image_url,
         isOpen: r.is_open,
         openingHours: r.opening_hours,
+        amenities: r.amenities ?? [],
+        gallery: r.gallery_json ?? [],
+        hygieneRating: r.hygiene_rating ?? null,
       },
       categories: cats.rows.map((c) => ({
         id: c.id,
@@ -92,6 +98,10 @@ export class MenuEditorRepository {
             isBestseller: i.is_bestseller,
             isAvailable: i.is_available,
             displayOrder: i.display_order,
+            allergens: i.allergens ?? [],
+            nutrition: i.nutrition_json ?? undefined,
+            spiceLevel: i.spice_level ?? 0,
+            serves: i.serves ?? undefined,
             variants: variants.rows
               .filter((v) => v.menu_item_id === i.id)
               .map((v) => ({ id: v.id, name: v.name, pricePaise: v.price_paise, isAvailable: v.is_available })),
@@ -175,11 +185,16 @@ export class MenuEditorRepository {
         input.isBestseller,
         input.isAvailable,
         input.displayOrder,
+        input.allergens ?? [],
+        input.nutrition ? JSON.stringify(input.nutrition) : null,
+        input.spiceLevel ?? 0,
+        input.serves ?? null,
       ];
       if (id) {
         const res = await client.query(
           `UPDATE menu_items SET category_id = $3, name = $4, description = $5, price_paise = $6, dietary_tag = $7,
-                  image_url = $8, is_bestseller = $9, is_available = $10, display_order = $11, updated_at = NOW()
+                  image_url = $8, is_bestseller = $9, is_available = $10, display_order = $11,
+                  allergens = $12, nutrition_json = $13, spice_level = $14, serves = $15, updated_at = NOW()
             WHERE id = $1 AND restaurant_id = $2 AND archived_at IS NULL RETURNING id`,
           [id, restaurantId, ...fields]
         );
@@ -187,8 +202,8 @@ export class MenuEditorRepository {
       } else {
         const res = await client.query(
           `INSERT INTO menu_items (restaurant_id, category_id, name, description, price_paise, dietary_tag, image_url,
-                                   is_bestseller, is_available, display_order)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+                                   is_bestseller, is_available, display_order, allergens, nutrition_json, spice_level, serves)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id`,
           [restaurantId, ...fields]
         );
         id = res.rows[0].id as string;
@@ -282,6 +297,9 @@ export class MenuEditorRepository {
               hero_image_url = COALESCE($7, hero_image_url),
               is_open = COALESCE($8, is_open),
               opening_hours = CASE WHEN $9::boolean THEN $10::jsonb ELSE opening_hours END,
+              amenities = COALESCE($11, amenities),
+              gallery_json = COALESCE($12, gallery_json),
+              hygiene_rating = COALESCE($13, hygiene_rating),
               updated_at = NOW()
         WHERE id = $1 RETURNING slug`,
       [
@@ -295,6 +313,9 @@ export class MenuEditorRepository {
         input.isOpen ?? null,
         input.openingHours !== undefined,
         input.openingHours ? JSON.stringify(input.openingHours) : null,
+        input.amenities ?? null,
+        input.gallery ? JSON.stringify(input.gallery) : null,
+        input.hygieneRating ?? null,
       ]
     );
     if (!res.rows[0]) throw new DomainError("NOT_FOUND", "Restaurant not found");

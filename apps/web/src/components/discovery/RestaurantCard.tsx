@@ -40,13 +40,26 @@ export function RestaurantCard({ restaurant }: { restaurant: RestaurantSummaryDt
   const distance = formatDistance(restaurant.distanceMeters);
 
   return (
-    <Link href={`/restaurants/${restaurant.slug}`} className="group block">
+    <Link
+      href={`/restaurants/${restaurant.slug}`}
+      onClick={() => {
+        if (restaurant.isSponsored) {
+          api.recordSponsorshipEvent({ restaurantId: restaurant.id, eventType: "CLICK" }).catch(() => {});
+        }
+      }}
+      className="group block"
+    >
       <div className="relative aspect-[4/3] overflow-hidden rounded-3xl bg-subtle">
         <SafeImage
           src={restaurant.heroImageUrl}
           alt={restaurant.name}
           className={`h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.03] ${unavailable ? "grayscale" : ""}`}
         />
+        {restaurant.isSponsored && !unavailable && (
+          <span className="absolute left-3 top-3 rounded-full bg-ink/75 px-2.5 py-1 text-[11px] font-medium text-white backdrop-blur">
+            Sponsored
+          </span>
+        )}
         {restaurant.offerTag && !unavailable && (
           <span className="absolute bottom-3 left-3 rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-ink shadow-soft">{restaurant.offerTag}</span>
         )}

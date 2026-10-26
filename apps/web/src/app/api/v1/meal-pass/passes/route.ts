@@ -12,7 +12,27 @@ const PurchasePass = z.object({
 export const GET = route(async (req, _ctx, requestId) => {
   const auth = await requireAuth(req);
   const passes = await MealPassRepository.listPasses(auth.user.id);
-  return apiSuccess({ passes }, 200, { requestId });
+  return apiSuccess(
+    {
+      passes: passes.map((p) => ({
+        id: p.id,
+        planId: p.plan_id,
+        planName: p.plan_name,
+        skuType: p.sku_type,
+        slotWindow: p.slot_window,
+        kitchenId: p.kitchen_restaurant_id,
+        kitchenName: p.kitchen_name,
+        totalMeals: p.total_meals,
+        mealsRemaining: p.meals_remaining,
+        status: p.status,
+        autoScheduleDays: p.auto_schedule_days,
+        purchasedAt: p.purchased_at,
+        expiresAt: p.expires_at,
+      })),
+    },
+    200,
+    { requestId }
+  );
 });
 
 export const POST = route(async (req, _ctx, requestId) => {
@@ -25,8 +45,16 @@ export const POST = route(async (req, _ctx, requestId) => {
   });
   return apiSuccess(
     {
-      pass: result.pass,
+      pass: {
+        id: result.pass.id,
+        planId: result.pass.plan_id,
+        mealsRemaining: result.pass.meals_remaining,
+        status: result.pass.status,
+        expiresAt: result.pass.expires_at,
+      },
       plan: { id: result.plan.id, name: result.plan.name, totalMeals: result.plan.total_meals },
+      scheduledDeliveries: result.scheduledDeliveries,
+      paymentMethod: "WALLET",
     },
     201,
     { requestId }

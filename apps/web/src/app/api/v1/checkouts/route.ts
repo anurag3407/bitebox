@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
-import { CheckoutResponse, CreateCheckoutRequestSchema, QuoteBreakdown, QuoteLineBreakdown } from "@startup/contracts";
+import {
+  CheckoutResponse,
+  CreateCheckoutRequestSchema,
+  OrderMode,
+  PaymentMethod,
+  PaymentStatus,
+  QuoteBreakdown,
+  QuoteLineBreakdown,
+} from "@startup/contracts";
 import {
   DomainError,
   ServiceabilityPolicy,
@@ -12,8 +20,10 @@ import {
   AddressRepository,
   AttributionRepository,
   CheckoutResult,
+  CouponRepository,
   OrderRepository,
   RestaurantRepository,
+  WalletRepository,
   evaluateAvailability,
   getDb,
   getDbPool,
@@ -45,10 +55,12 @@ function toResponse(result: CheckoutResult, simulatedPayment: boolean): Checkout
     orderNumber: result.orderNumber,
     paymentAttemptId: result.paymentAttemptId,
     razorpayOrderId: result.razorpayOrderId,
-    razorpayKeyId: getRazorpayKeyId(),
+    razorpayKeyId: result.paymentMethod === PaymentMethod.RAZORPAY ? getRazorpayKeyId() : undefined,
     amountPaise: result.payablePaise,
     currency: "INR",
     isDuplicate: result.isDuplicate,
+    paymentMethod: result.paymentMethod ?? PaymentMethod.RAZORPAY,
+    paymentStatus: result.paymentStatus ?? PaymentStatus.PENDING,
     simulatedPayment,
   };
 }
@@ -56,7 +68,9 @@ function toResponse(result: CheckoutResult, simulatedPayment: boolean): Checkout
 export const POST = route(async (req, _ctx, requestId) => {
   const auth = await requireAuth(req);
   await enforceRateLimit(req, "checkout", auth.user.id);
-  const { quoteId, deliveryAddressId, instructions, idempotencyKey } = await parseBody(req, CreateCheckoutRequestSchema);
+  const parsed = await parseBody(req, CreateCheckoutRequestSchema);
+  const { quoteId, deliveryAddressId, instructions, idempotencyKey, recipientName, recipientPhone, giftMessage } = parsed;
+  const paymentMethod = parsed.paymentMethod ?? PaymentMethod.RAZORPAY;
   const razorpay = new RazorpayAdapter();
   const attributionToken = cookieValue(req.headers.get("cookie"), "mp_attr");
 
@@ -66,6 +80,10 @@ export const POST = route(async (req, _ctx, requestId) => {
         quoteId,
         deliveryAddressId,
         instructions: instructions ?? "",
+        paymentMethod,
+        recipientName: recipientName ?? "",
+        recipientPhone: recipientPhone ?? "",
+        giftMessage: giftMessage ?? "",
         attribution: attributionToken ? hashAttributionToken(attributionToken) : "",
       })
     )
@@ -78,26 +96,60 @@ export const POST = route(async (req, _ctx, requestId) => {
   // 2. The quote is the price contract
   const [quote] = await getDb().select().from(quotes).where(eq(quotes.id, quoteId)).limit(1);
   if (!quote || quote.customerId !== auth.user.id) throw new DomainError("NOT_FOUND", "Quote not found");
-
-  // 3. Address must be the customer's and match what was priced
-  const address = await AddressRepository.findById(deliveryAddressId);
-  if (!address || address.userId !== auth.user.id || address.isDeleted) {
-    throw new DomainError("NOT_FOUND", "Delivery address not found");
+  const isPickup = quote.orderMode === OrderMode.PICKUP;
+  if (isPickup && recipientName) {
+    throw new DomainError("VALIDATION_ERROR", "Pickup orders are collected by you and can't be gifted to someone else.");
   }
-  const pricedForOtherAddress = quote.deliveryAddressId
-    ? quote.deliveryAddressId !== deliveryAddressId
-    : quote.destinationLatitude === null ||
-      ServiceabilityPolicy.calculateDistanceMeters(
-        { latitude: quote.destinationLatitude, longitude: quote.destinationLongitude! },
-        { latitude: address.latitude, longitude: address.longitude }
-      ) > MAX_ADDRESS_DRIFT_METERS;
-  if (pricedForOtherAddress) {
-    throw new DomainError("QUOTE_EXPIRED", "Your delivery address changed. Please review the updated bill.");
+
+  // 3. Delivery needs the priced address; pickup has no last mile
+  let address: Awaited<ReturnType<typeof AddressRepository.findById>> = null;
+  if (isPickup) {
+    if (paymentMethod === PaymentMethod.COD) {
+      throw new DomainError("VALIDATION_ERROR", "Cash on delivery isn't available for pickup. Pay online to skip the queue.");
+    }
+  } else {
+    if (!deliveryAddressId) throw new DomainError("VALIDATION_ERROR", "Choose a delivery address.");
+    address = await AddressRepository.findById(deliveryAddressId);
+    if (!address || address.userId !== auth.user.id || address.isDeleted) {
+      throw new DomainError("NOT_FOUND", "Delivery address not found");
+    }
+    const pricedForOtherAddress = quote.deliveryAddressId
+      ? quote.deliveryAddressId !== deliveryAddressId
+      : quote.destinationLatitude === null ||
+        ServiceabilityPolicy.calculateDistanceMeters(
+          { latitude: quote.destinationLatitude, longitude: quote.destinationLongitude! },
+          { latitude: address.latitude, longitude: address.longitude }
+        ) > MAX_ADDRESS_DRIFT_METERS;
+    if (pricedForOtherAddress) {
+      throw new DomainError("QUOTE_EXPIRED", "Your delivery address changed. Please review the updated bill.");
+    }
   }
 
   // 4. One order per quote: a retry after a failed/cancelled payment window reuses the pending order
   const existingOrder = await OrderRepository.findOrderByQuote(quoteId);
   if (existingOrder) {
+    // Wallet/COD orders are confirmed server-side, so a retry returns the placed order
+    if (
+      existingOrder.paymentMethod &&
+      existingOrder.paymentMethod !== PaymentMethod.RAZORPAY &&
+      existingOrder.fulfillmentState !== "PENDING_PAYMENT"
+    ) {
+      return apiSuccess(
+        toResponse(
+          {
+            orderId: existingOrder.id,
+            orderNumber: existingOrder.orderNumber,
+            payablePaise: existingOrder.payablePaise,
+            paymentMethod: existingOrder.paymentMethod,
+            paymentStatus: existingOrder.paymentStatus as PaymentStatus,
+            isDuplicate: true,
+          },
+          razorpay.isMock
+        ),
+        200,
+        { requestId }
+      );
+    }
     if (existingOrder.paymentStatus !== "PENDING") {
       throw new DomainError("STATE_CONFLICT", "This order has already been paid.");
     }
@@ -163,32 +215,52 @@ export const POST = route(async (req, _ctx, requestId) => {
       firstOriginCapPaise: config.first_origin_cap_paise,
     },
   });
-  const merchantNetPayoutPaise = SettlementCalculator.merchantEarningAfterFees(
-    breakdown,
-    commission.commissionPaise,
-    commission.merchantOrderFeePaise
+  const coupon = quote.couponCode ? await CouponRepository.findByCode(quote.couponCode) : null;
+  const merchantFundedDiscountPaise = coupon?.fundedBy === "MERCHANT" ? breakdown.discountPaise : 0;
+  const merchantNetPayoutPaise = Math.max(
+    0,
+    SettlementCalculator.merchantEarningAfterFees(
+      breakdown,
+      commission.commissionPaise,
+      commission.merchantOrderFeePaise
+    ) - merchantFundedDiscountPaise
   );
 
-  // 6. Gateway order first (external, cannot join our transaction). If the DB write
-  // below fails the provider order is simply never paid and expires.
-  let razorpayOrderId: string;
+  // 6. Gateway order first (external, cannot join our transaction). Wallet and COD
+  // orders skip the gateway entirely.
+  let razorpayOrderId: string | undefined;
   let orderNumber = generateOrderNumber();
-  try {
-    const rzpOrder = await razorpay.createOrder({
-      amountPaise: breakdown.payablePaise,
-      currency: "INR",
-      receipt: orderNumber,
-      notes: { quoteId, customerId: auth.user.id },
-    });
-    razorpayOrderId = rzpOrder.id;
-  } catch (err) {
-    if (err instanceof ProviderUnavailableError) {
-      throw new DomainError("PAYMENT_FAILED", "Payments are temporarily unavailable. Please try again in a minute.", {
-        httpStatus: 503,
+  if (paymentMethod === PaymentMethod.WALLET) {
+    const wallet = await WalletRepository.getOrCreate(auth.user.id);
+    if (wallet.balancePaise < breakdown.payablePaise) {
+      throw new DomainError("PAYMENT_FAILED", "Not enough BiteBox Credits for this order.", {
+        details: { balancePaise: wallet.balancePaise, requiredPaise: breakdown.payablePaise },
       });
     }
-    throw err;
   }
+  if (paymentMethod === PaymentMethod.RAZORPAY) {
+    try {
+      const rzpOrder = await razorpay.createOrder({
+        amountPaise: breakdown.payablePaise,
+        currency: "INR",
+        receipt: orderNumber,
+        notes: { quoteId, customerId: auth.user.id },
+      });
+      razorpayOrderId = rzpOrder.id;
+    } catch (err) {
+      if (err instanceof ProviderUnavailableError) {
+        throw new DomainError("PAYMENT_FAILED", "Payments are temporarily unavailable. Please try again in a minute.", {
+          httpStatus: 503,
+        });
+      }
+      throw err;
+    }
+  }
+
+  const scheduledFor = quote.scheduledFor ?? undefined;
+  const estimatedDeliveryMinutes = scheduledFor
+    ? Math.max(quote.estimatedMaxMinutes, Math.ceil((scheduledFor.getTime() - Date.now()) / 60000))
+    : quote.estimatedMaxMinutes;
 
   // 7. Persist atomically; retry the rare order-number collision with a fresh number
   for (let attempt = 0; ; attempt++) {
@@ -199,7 +271,7 @@ export const POST = route(async (req, _ctx, requestId) => {
         requestHash,
         customerId: auth.user.id,
         restaurantId: quote.restaurantId,
-        deliveryAddressId,
+        deliveryAddressId: isPickup ? undefined : address!.id,
         orderNumber,
         items,
         breakdown,
@@ -207,8 +279,17 @@ export const POST = route(async (req, _ctx, requestId) => {
         deliveryOtp: generateVerificationOtp(4),
         pickupOtp: generateVerificationOtp(4),
         instructions,
-        estimatedDeliveryMinutes: quote.estimatedMaxMinutes,
+        estimatedDeliveryMinutes,
         razorpayOrderId,
+        paymentMethod,
+        orderMode: quote.orderMode as OrderMode,
+        scheduledFor: scheduledFor?.toISOString(),
+        contactless: quote.contactless,
+        cutleryOptIn: quote.cutleryOptIn,
+        deliveryPreference: quote.deliveryPreference ?? undefined,
+        recipientName,
+        recipientPhone,
+        giftMessage,
         quoteId,
         couponCode: quote.couponCode ?? undefined,
         acquisitionChannel,
@@ -216,17 +297,27 @@ export const POST = route(async (req, _ctx, requestId) => {
         commissionPaise: commission.commissionPaise,
         merchantOrderFeePaise: commission.merchantOrderFeePaise,
         merchantNetPayoutPaise,
+        merchantFundedDiscountPaise,
         slotWindow: quote.slotWindow ?? undefined,
         dropPointId: quote.dropPointId ?? undefined,
-        deliveryAddressSnapshot: {
-          label: address.label,
-          building: address.building,
-          street: address.street,
-          landmark: address.landmark,
-          latitude: address.latitude,
-          longitude: address.longitude,
-          contactPhone: address.contactPhone ?? auth.user.phone ?? undefined,
-        },
+        deliveryAddressSnapshot: isPickup
+          ? {
+              label: "Pickup",
+              building: restaurant.name,
+              street: restaurant.addressText,
+              latitude: restaurant.latitude,
+              longitude: restaurant.longitude,
+              contactPhone: restaurant.phone ?? auth.user.phone ?? undefined,
+            }
+          : {
+              label: address!.label,
+              building: address!.building,
+              street: address!.street,
+              landmark: address!.landmark,
+              latitude: address!.latitude,
+              longitude: address!.longitude,
+              contactPhone: recipientPhone ?? address!.contactPhone ?? auth.user.phone ?? undefined,
+            },
       });
       return apiSuccess(toResponse(result, razorpay.isMock), result.isDuplicate ? 200 : 201, { requestId });
     } catch (err) {

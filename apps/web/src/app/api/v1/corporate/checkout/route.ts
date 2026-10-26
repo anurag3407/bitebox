@@ -29,7 +29,7 @@ export const POST = route(async (req, _ctx, requestId) => {
       corporateCoveredPaise: result.split.coveredPaise,
       corporateBilledPaise: result.split.corporateBilledPaise,
       managementFeePaise: result.split.managementFeePaise,
-      simulatedPayment: true,
+      paymentMethod: "WALLET",
     },
     201,
     { requestId }

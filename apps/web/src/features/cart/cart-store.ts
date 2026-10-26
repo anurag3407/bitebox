@@ -7,6 +7,8 @@ import { CartItemInput, ModifierOptionDto } from "@startup/contracts";
 // Mirrors server validation (CartItemInputSchema / CreateQuoteRequestSchema)
 export const MAX_LINE_QUANTITY = 20;
 export const MAX_CART_LINES = 50;
+// Set when a group host hands the shared cart to checkout so the group can close on success
+export const GROUP_ORDER_CODE_KEY = "bb_group_order_code";
 
 export interface CartLineItem extends CartItemInput {
   lineId: string;

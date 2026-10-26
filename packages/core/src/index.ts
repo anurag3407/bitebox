@@ -20,6 +20,7 @@ export * from "./modules/dispatch/batch-pricing.js";
 export * from "./modules/dispatch/batch-dispatcher.js";
 export * from "./modules/addons/addon-upsell.js";
 export * from "./modules/surplus/surplus-service.js";
+export * from "./modules/support/issue-remedy.js";
 export * from "./modules/ancillary/packaging-sponsorship.js";
 export * from "./modules/merchants/merchant-analytics.js";
 export * from "./modules/corporate/corporate-billing.js";

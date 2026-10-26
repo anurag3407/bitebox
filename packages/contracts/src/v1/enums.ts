@@ -93,6 +93,129 @@ export const AcquisitionChannel = {
   CORPORATE_CLUB: "CORPORATE_CLUB",
   SURPLUS_BAG: "SURPLUS_BAG",
 } as const;
+
+export const OrderMode = {
+  DELIVERY: "DELIVERY",
+  PICKUP: "PICKUP",
+} as const;
+export type OrderMode = (typeof OrderMode)[keyof typeof OrderMode];
+
+export const PaymentMethod = {
+  RAZORPAY: "RAZORPAY",
+  WALLET: "WALLET",
+  COD: "COD",
+} as const;
+export type PaymentMethod = (typeof PaymentMethod)[keyof typeof PaymentMethod];
+
+export const WalletTransactionKind = {
+  REFERRAL_BONUS: "REFERRAL_BONUS",
+  REFERRAL_WELCOME: "REFERRAL_WELCOME",
+  REFUND_CREDIT: "REFUND_CREDIT",
+  CASHBACK: "CASHBACK",
+  GOODWILL: "GOODWILL",
+  ORDER_PAYMENT: "ORDER_PAYMENT",
+  REVERSAL: "REVERSAL",
+  ADMIN_ADJUSTMENT: "ADMIN_ADJUSTMENT",
+  RIDER_TIP: "RIDER_TIP",
+  MEAL_PASS_PAYMENT: "MEAL_PASS_PAYMENT",
+  GIFT_CARD_PURCHASE: "GIFT_CARD_PURCHASE",
+  GIFT_CARD_REDEEM: "GIFT_CARD_REDEEM",
+  DONATION: "DONATION",
+  SPONSORSHIP_PAYMENT: "SPONSORSHIP_PAYMENT",
+  SPLIT_PAYMENT: "SPLIT_PAYMENT",
+  SPLIT_RECEIVED: "SPLIT_RECEIVED",
+  EVENT_TICKET_PAYMENT: "EVENT_TICKET_PAYMENT",
+} as const;
+export type WalletTransactionKind = (typeof WalletTransactionKind)[keyof typeof WalletTransactionKind];
+
+export const ReferralStatus = {
+  PENDING: "PENDING",
+  QUALIFIED: "QUALIFIED",
+  REWARDED: "REWARDED",
+  CANCELLED: "CANCELLED",
+  EXPIRED: "EXPIRED",
+} as const;
+export type ReferralStatus = (typeof ReferralStatus)[keyof typeof ReferralStatus];
+
+export const RiderVerificationStatus = {
+  PENDING: "PENDING",
+  IN_REVIEW: "IN_REVIEW",
+  VERIFIED: "VERIFIED",
+  REJECTED: "REJECTED",
+  SUSPENDED: "SUSPENDED",
+} as const;
+export type RiderVerificationStatus = (typeof RiderVerificationStatus)[keyof typeof RiderVerificationStatus];
+
+export const RiderDocumentType = {
+  PROFILE_PHOTO: "PROFILE_PHOTO",
+  AADHAAR: "AADHAAR",
+  PAN: "PAN",
+  DRIVING_LICENSE: "DRIVING_LICENSE",
+  VEHICLE_RC: "VEHICLE_RC",
+  VEHICLE_INSURANCE: "VEHICLE_INSURANCE",
+  POLICE_VERIFICATION: "POLICE_VERIFICATION",
+} as const;
+export type RiderDocumentType = (typeof RiderDocumentType)[keyof typeof RiderDocumentType];
+
+export const OrderMessageChannel = {
+  CUSTOMER_RIDER: "CUSTOMER_RIDER",
+  CUSTOMER_MERCHANT: "CUSTOMER_MERCHANT",
+} as const;
+export type OrderMessageChannel = (typeof OrderMessageChannel)[keyof typeof OrderMessageChannel];
+
+export const OrderMessageSender = {
+  CUSTOMER: "CUSTOMER",
+  RIDER: "RIDER",
+  MERCHANT: "MERCHANT",
+  SYSTEM: "SYSTEM",
+} as const;
+export type OrderMessageSender = (typeof OrderMessageSender)[keyof typeof OrderMessageSender];
+
+export const OrderIssueCategory = {
+  MISSING_ITEM: "MISSING_ITEM",
+  WRONG_ITEM: "WRONG_ITEM",
+  COLD_FOOD: "COLD_FOOD",
+  QUALITY: "QUALITY",
+  LATE_DELIVERY: "LATE_DELIVERY",
+  SPILLED: "SPILLED",
+  NOT_DELIVERED: "NOT_DELIVERED",
+  OTHER: "OTHER",
+} as const;
+export type OrderIssueCategory = (typeof OrderIssueCategory)[keyof typeof OrderIssueCategory];
+
+export const OrderIssueStatus = {
+  OPEN: "OPEN",
+  UNDER_REVIEW: "UNDER_REVIEW",
+  RESOLVED: "RESOLVED",
+  REJECTED: "REJECTED",
+} as const;
+export type OrderIssueStatus = (typeof OrderIssueStatus)[keyof typeof OrderIssueStatus];
+
+export const OrderIssueResolution = {
+  FULL_REFUND: "FULL_REFUND",
+  PARTIAL_REFUND: "PARTIAL_REFUND",
+  WALLET_CREDIT: "WALLET_CREDIT",
+  REDELIVERY: "REDELIVERY",
+  COUPON: "COUPON",
+  NONE: "NONE",
+} as const;
+export type OrderIssueResolution = (typeof OrderIssueResolution)[keyof typeof OrderIssueResolution];
+
+export const DiningReservationStatus = {
+  CONFIRMED: "CONFIRMED",
+  SEATED: "SEATED",
+  COMPLETED: "COMPLETED",
+  CANCELLED: "CANCELLED",
+  NO_SHOW: "NO_SHOW",
+} as const;
+export type DiningReservationStatus = (typeof DiningReservationStatus)[keyof typeof DiningReservationStatus];
+
+export const SafetyEventType = {
+  SOS: "SOS",
+  TRACKING_SHARED: "TRACKING_SHARED",
+  DELIVERY_CONCERN: "DELIVERY_CONCERN",
+} as const;
+export type SafetyEventType = (typeof SafetyEventType)[keyof typeof SafetyEventType];
 export type AcquisitionChannel = (typeof AcquisitionChannel)[keyof typeof AcquisitionChannel];
 
 export const FaultCode = {

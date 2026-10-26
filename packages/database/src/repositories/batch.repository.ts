@@ -47,6 +47,60 @@ export class BatchRepository {
     return res.rows;
   }
 
+  static async listCities() {
+    const res = await getDbPool().query(`SELECT id, name, slug FROM cities WHERE is_active ORDER BY name`);
+    return res.rows.map((r) => ({ id: r.id as string, name: r.name as string, slug: r.slug as string }));
+  }
+
+  static async updateClusterActive(clusterId: string, isActive: boolean) {
+    const res = await getDbPool().query(
+      `UPDATE clusters SET is_active = $2 WHERE id = $1 RETURNING id, name, is_active`,
+      [clusterId, isActive]
+    );
+    return res.rows[0] ?? null;
+  }
+
+  static async listAllDropPoints() {
+    const res = await getDbPool().query(
+      `SELECT d.*, c.name AS cluster_name
+         FROM drop_points d JOIN clusters c ON c.id = d.cluster_id
+        WHERE c.is_active
+        ORDER BY c.name, d.name`
+    );
+    return res.rows.map((r) => ({
+      id: r.id as string,
+      clusterId: r.cluster_id as string,
+      clusterName: r.cluster_name as string,
+      name: r.name as string,
+      latitude: r.latitude as number,
+      longitude: r.longitude as number,
+      captainFeePerBagPaise: r.captain_fee_per_bag_paise as number,
+    }));
+  }
+
+  static async listClusters() {
+    const res = await getDbPool().query(
+      `SELECT c.id, c.city_id, c.name, c.min_profitable_drops, c.is_active, c.created_at,
+              COUNT(DISTINCT d.id)::int AS drop_points,
+              COUNT(DISTINCT b.id)::int AS batches
+         FROM clusters c
+         LEFT JOIN drop_points d ON d.cluster_id = c.id
+         LEFT JOIN dispatch_batches b ON b.cluster_id = c.id
+        GROUP BY c.id
+        ORDER BY c.created_at DESC`
+    );
+    return res.rows.map((r) => ({
+      id: r.id as string,
+      cityId: r.city_id as string,
+      name: r.name as string,
+      minProfitableDrops: r.min_profitable_drops as number,
+      isActive: r.is_active as boolean,
+      dropPoints: r.drop_points as number,
+      batches: r.batches as number,
+      createdAt: (r.created_at as Date).toISOString(),
+    }));
+  }
+
   static async findDropPoint(dropPointId: string) {
     const res = await getDbPool().query(
       `SELECT dp.*, c.min_profitable_drops FROM drop_points dp JOIN clusters c ON c.id = dp.cluster_id WHERE dp.id = $1`,
@@ -250,11 +304,66 @@ export class BatchRepository {
 
   static async listBatches(clusterId: string) {
     const res = await getDbPool().query(
-      `SELECT b.*, COUNT(bo.id)::int AS order_count
-         FROM dispatch_batches b LEFT JOIN batch_orders bo ON bo.batch_id = b.id
-        WHERE b.cluster_id = $1 GROUP BY b.id ORDER BY b.slot_start DESC LIMIT 50`,
+      `SELECT b.*, COUNT(bo.id)::int AS order_count, r.name AS rider_name
+         FROM dispatch_batches b
+         LEFT JOIN batch_orders bo ON bo.batch_id = b.id
+         LEFT JOIN riders r ON r.id = b.rider_id
+        WHERE b.cluster_id = $1 GROUP BY b.id, r.name ORDER BY b.slot_start DESC LIMIT 50`,
       [clusterId]
     );
-    return res.rows;
+    return res.rows.map((r) => ({
+      id: r.id as string,
+      clusterId: r.cluster_id as string,
+      slotWindow: r.slot_window as string,
+      slotStart: (r.slot_start as Date).toISOString(),
+      slotEnd: (r.slot_end as Date).toISOString(),
+      status: r.status as string,
+      riderId: r.rider_id as string | null,
+      riderName: r.rider_name as string | null,
+      totalDrops: r.total_drops as number,
+      orderCount: Number(r.order_count),
+      createdAt: (r.created_at as Date).toISOString(),
+    }));
+  }
+
+  static async assignBatchRider(input: { batchId: string; clusterId: string; riderId: string | null }) {
+    if (input.riderId) {
+      const rider = await getDbPool().query(`SELECT is_approved FROM riders WHERE id = $1`, [input.riderId]);
+      if (!rider.rows[0]) throw new DomainError("NOT_FOUND", "Rider not found");
+      if (!rider.rows[0].is_approved) throw new DomainError("FORBIDDEN", "Rider is not approved");
+    }
+    const res = await getDbPool().query(
+      `UPDATE dispatch_batches SET rider_id = $3, updated_at = NOW()
+        WHERE id = $1 AND cluster_id = $2 AND status NOT IN ('COMPLETED', 'CANCELLED')
+        RETURNING *`,
+      [input.batchId, input.clusterId, input.riderId]
+    );
+    if (!res.rows[0]) throw new DomainError("STATE_CONFLICT", "This batch can no longer be assigned");
+    return res.rows[0];
+  }
+
+  static async listBatchCandidates(clusterId: string) {
+    const res = await getDbPool().query(
+      `SELECT o.slot_window,
+              COUNT(*)::int AS orders,
+              COUNT(DISTINCT o.drop_point_id)::int AS drops,
+              MIN(o.created_at) AS first_order,
+              MAX(o.slot_cutoff_at) AS last_cutoff
+         FROM orders o
+         JOIN drop_points dp ON dp.id = o.drop_point_id
+        WHERE dp.cluster_id = $1 AND o.batch_id IS NULL
+          AND o.payment_status <> 'PENDING'
+          AND o.fulfillment_state NOT IN ('CANCELLED', 'DELIVERY_FAILED', 'PENDING_PAYMENT')
+        GROUP BY o.slot_window
+        ORDER BY MIN(o.created_at) DESC`,
+      [clusterId]
+    );
+    return res.rows.map((r) => ({
+      slotWindow: r.slot_window as string,
+      orders: Number(r.orders),
+      drops: Number(r.drops),
+      firstOrderAt: (r.first_order as Date).toISOString(),
+      lastCutoffAt: r.last_cutoff ? (r.last_cutoff as Date).toISOString() : null,
+    }));
   }
 }
